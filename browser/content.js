@@ -79,10 +79,13 @@
       },
     };
 
+    // Note: never run a regex or endsWith() on `flat` while building it. V8 builds it as a rope,
+    // and each of those flattens the whole string, which made long pages take seconds (O(n²)).
     let flat = '';
+    let lastCh = ''; // last character of `flat`
     const segs = []; // { node, flatStart, nodeOffset, len }
     let lastBlock = null;
-    const lineBreak = () => { if (flat && !flat.endsWith('\n')) flat += '\n'; };
+    const lineBreak = () => { if (flat && lastCh !== '\n') { flat += '\n'; lastCh = '\n'; } };
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, filter);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       if (node.nodeType !== Node.TEXT_NODE) { lineBreak(); continue; } // <br>
@@ -95,14 +98,16 @@
       }
       const piece = data.slice(a, b);
       if (!/\S/.test(piece)) {
-        if (flat && !/\s$/.test(flat)) flat += ' ';
+        if (flat && !/\s/.test(lastCh)) { flat += ' '; lastCh = ' '; }
         continue;
       }
       const block = blockOf(node.parentElement);
       if (block !== lastBlock) { lineBreak(); lastBlock = block; }
       segs.push({ node, flatStart: flat.length, nodeOffset: a, len: b - a });
       // keep 1:1 length so offsets map back to the DOM; "\n" is reserved for paragraph breaks
-      flat += piece.replace(/[\r\n\t\f\v]/g, ' ');
+      const clean = piece.replace(/[\r\n\t\f\v]/g, ' ');
+      flat += clean;
+      lastCh = clean[clean.length - 1];
     }
     return { flat, segs };
   }
@@ -186,16 +191,31 @@
   // on an image), use the first text after it.
   function flatPosAt(node, offset) {
     if (!doc || !node) return -1;
-    const seg = doc.segs.find((s) => s.node === node);
-    if (seg) return seg.flatStart + Math.min(seg.len, Math.max(0, offset - seg.nodeOffset));
-    const after = doc.segs.find((s) => node.compareDocumentPosition(s.node) & Node.DOCUMENT_POSITION_FOLLOWING);
-    return after ? after.flatStart : -1;
+    const { segs } = doc;
+    doc.segOf ||= new Map(segs.map((s, k) => [s.node, k]));
+    const k = doc.segOf.get(node);
+    if (k !== undefined) {
+      const seg = segs[k];
+      return seg.flatStart + Math.min(seg.len, Math.max(0, offset - seg.nodeOffset));
+    }
+    // segs are in document order: binary search for the first one after `node`
+    let lo = 0;
+    let hi = segs.length;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (node.compareDocumentPosition(segs[m].node) & Node.DOCUMENT_POSITION_FOLLOWING) hi = m; else lo = m + 1;
+    }
+    return lo < segs.length ? segs[lo].flatStart : -1;
   }
 
   function sentenceAtPos(pos) {
+    const { sentences } = doc;
+    let lo = 0;
+    let hi = sentences.length - 1;
     let found = -1;
-    for (let k = 0; k < doc.sentences.length; k++) {
-      if (doc.sentences[k].start <= pos) found = k; else break;
+    while (lo <= hi) {
+      const m = (lo + hi) >> 1;
+      if (sentences[m].start <= pos) { found = m; lo = m + 1; } else hi = m - 1;
     }
     return found;
   }

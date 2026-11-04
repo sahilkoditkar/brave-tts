@@ -17,7 +17,7 @@ brought the same voices into VS Code for reading docs.
 |---|---|
 | [`browser/`](browser) | Brave/Chromium extension: reads web pages with sentence and word highlighting |
 | [`vscode/`](vscode) | VS Code extension: reads Markdown/docs, only the comments in code, and Claude Code replies |
-| [`shared/`](shared) | The voice engine both use: request token, constants, SSML/protocol |
+| [`shared/`](shared) | The voice engine both use: request token, constants, SSML, and the connection/protocol client |
 
 `shared/` is the single source of truth. Brave can only load files inside the extension folder, so
 `browser/lib/` holds an exact copy. `node scripts/sync-shared.mjs` refreshes it, and `--check` fails
@@ -39,8 +39,8 @@ if it's stale.
 ```
 page (content.js)            background.js               offscreen.html (offscreen.js)
 ─────────────────            ─────────────               ─────────────────────────────
-extract text → sentences ──▶ routes messages,      ──▶  WebSocket per sentence → MP3 + word timings
-CSS Custom Highlight API ◀── relays player events  ◀──  plays audio, prefetches next 3 sentences,
+extract text → sentences ──▶ routes messages,      ──▶  one reused WebSocket → MP3 + word timings
+CSS Custom Highlight API ◀── relays player events  ◀──  plays audio, prefetches next 2 sentences,
 floating player (shadow DOM) context menu, shortcut      reports sentence/word progress
 ```
 
@@ -77,11 +77,19 @@ floating player (shadow DOM) context menu, shortcut      reports sentence/word p
 - **No stalls between sentences.** Both extensions keep **one** connection open and request
   sentences one at a time over it, the way Edge does, while the current one plays. A stalled
   request is abandoned after 5 s and retried on a fresh connection. (Opening a connection per
-  sentence, several at once, made the service stall.)
+  sentence, several at once, made the service stall.) This logic is written once, in
+  `shared/edge-client.js`; each extension only supplies its WebSocket.
+- **No handshake wait on the next read.** The connection is opened while the text is still being
+  extracted, and stays open for 30 s after reading stops. Stopping, skipping or changing speed
+  lets the cancelled sentence finish arriving in the background instead of closing the connection.
+  The browser also keeps the last 40 sentences it spoke, so going back or reading again is instant.
 - **Fast start.** The browser streams audio into a `MediaSource` as it arrives, so speech starts
   with the first chunk rather than after the whole sentence. The audio player is also warmed up while
   the page script loads. In VS Code, where the OS player needs whole files, a long first sentence is
   split at a natural pause.
+- **Long pages.** Text extraction builds one flat string from the page's text nodes. Testing the end
+  of that string with a regex made V8 copy the whole string each time, so a long page took
+  seconds; tracking the last character instead made it ~20× faster.
 - **Testable without the real service.** A local fake speech server (TLS + hand-rolled WebSocket
   framing) runs end-to-end tests for both extensions. That covers header rewriting, the token, the
   protocol, playback, highlighting, selection, speed changes, and jumping.
@@ -130,8 +138,16 @@ folder. It can't run on `brave://` pages, the extension store, or the built-in P
 ```bash
 node scripts/sync-shared.mjs --check
 node shared/tests/token.test.mjs
+node shared/tests/edge-client.test.mjs
 node vscode/tests/text.test.mjs
 node vscode/tests/claude.test.mjs
 node browser/tests/e2e/run.js         # needs Playwright, openssl, ffmpeg, port 443
 node vscode/tests/extension.test.cjs  # needs openssl, ffmpeg, port 443
+```
+
+**Benchmarks** (fake service with simulated latency, and large generated inputs):
+
+```bash
+node browser/tests/e2e/bench.js   # first word, gaps, a 1.5 MB page
+node vscode/tests/bench.mjs       # Claude Code transcripts, long Markdown
 ```

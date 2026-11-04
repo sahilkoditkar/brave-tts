@@ -5,9 +5,14 @@ import { generateMuid } from './lib/drm.js';
 import { listVoices } from './lib/tts.js';
 
 // ---------- settings ----------
-async function getSettings() {
-  const { settings } = await chrome.storage.local.get('settings');
-  return { ...DEFAULT_SETTINGS, ...settings };
+// Kept in memory (the worker can restart at any time, which just reloads them).
+let settingsCache = null;
+function getSettings() {
+  if (!settingsCache) {
+    settingsCache = chrome.storage.local.get('settings').then(({ settings }) => ({ ...DEFAULT_SETTINGS, ...settings }));
+    settingsCache.catch(() => { settingsCache = null; });
+  }
+  return settingsCache;
 }
 
 // ---------- make our requests to the Edge endpoint look like Edge's own ----------
@@ -79,14 +84,14 @@ async function ensureOffscreen() {
 
 async function toOffscreen(msg) {
   await ensureOffscreen();
-  if (msg.type === 'load' || msg.type === 'settings') msg.settings = await getSettings();
+  if (msg.type === 'load' || msg.type === 'settings' || msg.type === 'warm') msg.settings = await getSettings();
   // A just-created offscreen page may still be loading its scripts: retry briefly until it listens.
   for (let attempt = 0; ; attempt++) {
     try {
       return await chrome.runtime.sendMessage({ ...msg, to: 'offscreen' });
     } catch (err) {
       if (attempt >= 40 || !String(err?.message).includes('Receiving end does not exist')) throw err;
-      await new Promise((r) => setTimeout(r, 25));
+      await new Promise((r) => setTimeout(r, 10));
       await ensureOffscreen();
     }
   }
@@ -94,10 +99,14 @@ async function toOffscreen(msg) {
 
 // ---------- injecting the page reader ----------
 async function startInTab(tabId, mode) {
-  ensureOffscreen().catch(() => {}); // warm up the audio player while the page script loads
+  // While the page script loads and extracts the text: start the audio player and open the
+  // connection to the voice service, so the first sentence can be requested at once.
+  toOffscreen({ type: 'warm' }).catch(() => {});
   try {
-    await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] });
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await Promise.all([
+      chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] }),
+      chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }),
+    ]);
   } catch (err) {
     console.warn('Cannot read this page:', err);
     chrome.action.setBadgeBackgroundColor({ color: '#c62828' });
@@ -105,7 +114,7 @@ async function startInTab(tabId, mode) {
     chrome.action.setTitle({ tabId, title: `Read Aloud can't run on this page: ${err.message}` });
     return { ok: false, error: err.message };
   }
-  return chrome.tabs.sendMessage(tabId, { to: 'content', cmd: mode });
+  return chrome.tabs.sendMessage(tabId, { to: 'content', cmd: mode }, { frameId: 0 });
 }
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -128,6 +137,7 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
 
 // Settings edited in popup or player bar -> apply to the player immediately.
 chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area === 'local' && changes.settings) settingsCache = null;
   if (area === 'local' && changes.settings && await hasOffscreen()) {
     chrome.runtime.sendMessage({ to: 'offscreen', type: 'settings', settings: await getSettings() }).catch(() => {});
   }
@@ -150,7 +160,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // offscreen -> content script relay
   if (msg?.to === 'tab') {
     const { to, tabId, ...rest } = msg;
-    chrome.tabs.sendMessage(tabId, { to: 'content', ...rest }).catch(() => {
+    chrome.tabs.sendMessage(tabId, { to: 'content', ...rest }, { frameId: 0 }).catch(() => {
       // tab is gone: stop playing into the void
       chrome.runtime.sendMessage({ to: 'offscreen', type: 'stop', tabId }).catch(() => {});
     });

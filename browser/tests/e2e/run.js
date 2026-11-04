@@ -51,6 +51,25 @@ function setup() {
     const send = (msg) => ctl.evaluate((m) => chrome.runtime.sendMessage(m), msg);
     const sentence = () => page.evaluate(() => { const h = CSS.highlights.get('read-aloud-sentence'); return h ? [...h].map(String)[0] : null; });
     const playerGone = () => page.waitForFunction(() => !document.querySelector('read-aloud-player'), null, { timeout: 20000 });
+    // Headless Chrome never counts as "audible", so it closes the audio player 30 s after it starts
+    // (a real browser keeps it open while speech plays). Start each scenario with a fresh player:
+    // that also makes it a cold start (no open connection, no cached audio).
+    const freshPlayer = async () => {
+      await ctl.evaluate(() => chrome.offscreen.closeDocument().catch(() => {}));
+      await page.waitForTimeout(100);
+    };
+    const selectItems = () => page.evaluate(() => {
+      const li = document.querySelectorAll('li');
+      const r = document.createRange(); r.setStart(li[0].firstChild, 0); r.setEnd(li[1].firstChild, li[1].firstChild.length);
+      getSelection().removeAllRanges(); getSelection().addRange(r);
+    });
+    // Finished sentences are cached (text + voice settings) in the player, so re-reading needs no
+    // requests. Changing the pitch gets fresh requests without closing the player (and connection).
+    let pitch = 0;
+    const freshAudio = async () => {
+      await ctl.evaluate(async (p) => { const { settings } = await chrome.storage.local.get('settings'); await chrome.storage.local.set({ settings: { ...settings, pitch: p } }); }, ++pitch);
+      await page.waitForTimeout(150);
+    };
 
     // Read whole page
     await send({ to: 'bg', type: 'start', tabId, mode: 'page' });
@@ -74,8 +93,28 @@ function setup() {
     assert.ok(connections <= 2, `8 sentences should share one connection (opened ${connections})`);
     console.log(`✓ page mode, headers, token; ${connections} connection(s) for 8 sentences`);
 
+    // Reading the same text again: served from the sentence cache, nothing requested.
+    // Then new audio (different pitch): reuses the connection left open by the last read.
+    await freshPlayer();
+    await selectItems();
+    await send({ to: 'bg', type: 'start', tabId, mode: 'selection' });
+    await playerGone();
+    fs.writeFileSync(LOG, '');
+    await selectItems();
+    await send({ to: 'bg', type: 'start', tabId, mode: 'selection' });
+    await playerGone();
+    assert.equal(ssmlTexts().length, 0, 'second read served from the sentence cache');
+    await freshAudio();
+    await selectItems();
+    await send({ to: 'bg', type: 'start', tabId, mode: 'selection' });
+    await playerGone();
+    assert.deepEqual(ssmlTexts(), ['First item in a list', 'Second item here']);
+    assert.equal(readLog().filter((e) => e.type === 'ws').length, 0, 'no new connection: the idle one was kept open');
+    console.log('✓ re-reading is served from cache; the next read reuses the open connection');
+
     // Service drops the connection after every sentence -> reconnects transparently
     const setMode = (q) => page.evaluate((u) => fetch(u).then((r) => r.json()), `http://127.0.0.1:8080/__mode?${q}`);
+    await freshPlayer();
     fs.writeFileSync(LOG, '');
     await setMode('closeAfterTurn=1');
     await send({ to: 'bg', type: 'start', tabId, mode: 'page' });
@@ -84,6 +123,7 @@ function setup() {
     console.log('✓ reconnects when the service closes the connection after each sentence');
 
     // Service stalls on a request -> gives up within seconds and retries on a fresh connection
+    await freshPlayer();
     fs.writeFileSync(LOG, '');
     await setMode('stallNext=1');
     const tStall = Date.now();
@@ -98,6 +138,7 @@ function setup() {
     console.log(`✓ stalled request recovered in ${(recoverMs / 1000).toFixed(1)} s (was up to 20 s + skip)`);
 
     // Speed change mid-read + Alt+click jump
+    await freshPlayer();
     fs.writeFileSync(LOG, '');
     await send({ to: 'bg', type: 'start', tabId, mode: 'page' });
     await page.waitForTimeout(500);
@@ -117,7 +158,7 @@ function setup() {
       const r = document.createRange(); r.setStart(li[0].firstChild, 6); r.setEnd(li[1].firstChild, 6);
       getSelection().removeAllRanges(); getSelection().addRange(r);
     });
-    await page.waitForTimeout(31000); // let the idle audio player close, like a real cold start
+    await freshPlayer(); // cold start: no audio player, no connection
     const t0 = Date.now();
     await send({ to: 'bg', type: 'start', tabId, mode: 'selection' });
     await page.waitForFunction(() => CSS.highlights.get('read-aloud-word')?.size > 0, null, { timeout: 10000, polling: 20 });
@@ -130,6 +171,7 @@ function setup() {
 
     // Right-click a word -> "Read aloud from here" starts at that word.
     // (macOS selects the right-clicked word; simulate that selection here.)
+    await freshPlayer();
     fs.writeFileSync(LOG, '');
     await page.evaluate(() => {
       const t = document.querySelectorAll('p')[1].firstChild;
@@ -145,6 +187,7 @@ function setup() {
     console.log('✓ read aloud from here (right-click)');
 
     // Read from caret, then Stop from popup closes the player bar
+    await freshPlayer();
     fs.writeFileSync(LOG, '');
     await page.evaluate(() => { const p = document.querySelectorAll('p')[1]; getSelection().collapse(p.firstChild, 3); });
     await send({ to: 'bg', type: 'start', tabId, mode: 'toggle' });

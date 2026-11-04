@@ -19,7 +19,10 @@ const add = (zipPath, srcPath) => files.set(zipPath, fs.readFileSync(srcPath));
 const manifest = { ...pkg, main: './vscode/extension.js', icon: 'icon.png' };
 files.set('extension/package.json', Buffer.from(JSON.stringify(manifest, null, 2)));
 for (const f of ['extension.js', 'engine.mjs', 'text.mjs', 'player.mjs', 'claude.mjs']) add(`extension/vscode/${f}`, path.join(VSCODE_DIR, f));
-for (const f of ['constants.js', 'drm.js', 'ssml.js', 'package.json']) add(`extension/shared/${f}`, path.join(ROOT, 'shared', f));
+// every shared module (same rule as scripts/sync-shared.mjs, so a new one can't be left out)
+for (const f of fs.readdirSync(path.join(ROOT, 'shared'))) {
+  if (f.endsWith('.js') || f === 'package.json') add(`extension/shared/${f}`, path.join(ROOT, 'shared', f));
+}
 add('extension/readme.md', path.join(VSCODE_DIR, 'README.md'));
 add('extension/icon.png', path.join(ROOT, 'browser/icons/icon128.png'));
 

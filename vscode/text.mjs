@@ -272,8 +272,9 @@ function commentsSpoken(text, syntax) {
 const MAX_SENTENCE = 600;
 const ABBREVIATION_END = /(?:\b(?:Mr|Mrs|Ms|Mx|Dr|Prof|Sr|Jr|St|Mt|Gen|Col|Lt|Sgt|Capt|Rev|Hon|vs|approx|Fig|No|e\.g|i\.e|etc)|(?:^|\s)\p{Lu})\.$/u;
 
-// -> [{ start, text }] with offsets into `spoken` (== document offsets)
-export function splitSentences(spoken, lang = 'en') {
+// -> [{ start, text }] with offsets into `spoken` (== document offsets), for the paragraphs that
+// overlap [from, to) (segmenting is the slow part, so the rest of a long document is skipped).
+function sentencesOf(spoken, lang, from = 0, to = spoken.length) {
   let segmenter;
   try { segmenter = new Intl.Segmenter(lang, { granularity: 'sentence' }); } catch { segmenter = new Intl.Segmenter('en', { granularity: 'sentence' }); }
   const out = [];
@@ -294,8 +295,12 @@ export function splitSentences(spoken, lang = 'en') {
     }
     if (text) out.push({ start, text });
   };
-  let pos = 0;
-  for (const para of spoken.split('\n')) {
+  const a = from > 0 ? spoken.lastIndexOf('\n', from - 1) + 1 : 0;
+  let b = spoken.indexOf('\n', Math.max(to, a));
+  if (b === -1) b = spoken.length;
+  let pos = a;
+  for (const para of spoken.slice(a, b).split('\n')) {
+    if (!/\S/.test(para)) { pos += para.length + 1; continue; } // blank (or skipped code)
     let pendStart = -1;
     let pendEnd = 0;
     for (const { segment, index } of segmenter.segment(para)) {
@@ -310,13 +315,18 @@ export function splitSentences(spoken, lang = 'en') {
     if (pendStart >= 0) push(pos + pendStart, para.slice(pendStart, pendEnd));
     pos += para.length + 1;
   }
+  return out;
+}
+
+// -> [{ start, text, speak }] with offsets into `spoken` (== document offsets)
+export function splitSentences(spoken, lang = 'en') {
   // Text inside one sentence may span skipped regions (spaces) — collapse for speech.
-  return out.map((s) => ({ ...s, speak: s.text.replace(/\s+/g, ' ') }));
+  return sentencesOf(spoken, lang).map((s) => ({ ...s, speak: s.text.replace(/\s+/g, ' ') }));
 }
 
 // Sentences to read from `from` (cursor, starting at the word under it) up to `to`.
 export function sentencesInRange(spoken, from, to = spoken.length, lang = 'en') {
-  const all = splitSentences(spoken, lang);
+  const all = sentencesOf(spoken, lang, from, to);
   const out = [];
   for (const s of all) {
     const sEnd = s.start + s.text.length;
@@ -349,21 +359,35 @@ export function isShortSelection(text) {
 // Last occurrence of `needle` in `spoken`, ignoring whitespace differences (rendered text vs
 // source) and, as a fallback, case. Returns an offset into `spoken`, or -1.
 export function findSpoken(spoken, needle) {
-  let collapsed = '';
-  const map = [];
-  let prevSpace = true;
-  for (let i = 0; i < spoken.length; i++) {
-    if (/\s/.test(spoken[i])) {
-      if (!prevSpace) { collapsed += ' '; map.push(i); prevSpace = true; }
-    } else {
-      collapsed += spoken[i]; map.push(i); prevSpace = false;
-    }
-  }
   const n = needle.replace(/\s+/g, ' ').trim();
   if (!n) return -1;
+  const lead = spoken.length - spoken.trimStart().length;
+  const collapsed = spoken.slice(lead).replace(/\s+/g, ' ');
   let k = collapsed.lastIndexOf(n);
   if (k < 0) k = collapsed.toLowerCase().lastIndexOf(n.toLowerCase());
-  return k < 0 ? -1 : map[k];
+  if (k < 0) return -1;
+  // Map offset k in `collapsed` back to `spoken`: each whitespace run became one space.
+  let i = lead; // position in spoken
+  let c = 0; // matching position in collapsed
+  const ws = /\s+/g;
+  ws.lastIndex = lead;
+  for (let m; (m = ws.exec(spoken));) {
+    if (c + (m.index - i) > k) break;
+    c += m.index - i;
+    if (c === k) return m.index;
+    c += 1;
+    i = m.index + m[0].length;
+  }
+  return i + (k - c);
+}
+
+// Cheap pre-check before rendering a whole Markdown message to spoken text: could `needle`
+// (copied from the rendered reply) be in `markdown`? Checks its longest word.
+export function mightContain(markdown, needle) {
+  const words = needle.match(/[\p{L}\p{N}]+/gu);
+  if (!words) return true;
+  const longest = words.reduce((x, y) => (y.length > x.length ? y : x));
+  return markdown.toLowerCase().includes(longest.toLowerCase());
 }
 
 // The OS audio player needs a complete file, so the first sound waits for the whole first
