@@ -1,0 +1,7 @@
+::highlight(brave-tts-sentence) {
+  background-color: rgba(255, 214, 102, 0.35);
+}
+::highlight(brave-tts-word) {
+  background-color: #ffd54f;
+  color: #000;
+}

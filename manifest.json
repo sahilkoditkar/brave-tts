@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Natural Read Aloud (personal)",
+  "version": "0.1.0",
+  "description": "Read web pages aloud with Microsoft's natural neural voices (the ones Edge's Read Aloud uses). Personal use.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "storage",
+    "offscreen",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": [
+    "https://speech.platform.bing.com/*",
+    "wss://speech.platform.bing.com/*",
+    "https://*.tts.speech.microsoft.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Read aloud",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "read-aloud": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Read aloud (or pause/resume)"
+    }
+  }
+}

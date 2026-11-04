@@ -1,0 +1,14 @@
+// Sec-MS-GEC token vectors produced by edge-tts 7.3.1's generate_sec_ms_gec_v2().
+// Run: node tests/token.test.mjs
+import assert from 'node:assert/strict';
+import { generateSecMsGec } from '../lib/drm.js';
+
+const vectors = {
+  0: '52BC7A17B50DFEC9-28C4394775C8751CD2F6859C030C06DB1489ACAB3B3A7651831FC26895177ED6',
+  1700000000: '2CD23A2CA0B2595A-F3C846C370E05F9CC83ACC5F995C5F5D87A4D0F14CE8936A0F902E64099E38A2',
+  1762300000.5: 'A333B4920DBC24D4-89730AD48DFA0B7DFB93BD08837E7D8F2A465B82F9866A891FB7AE7B3D7107BD',
+  1793000000: '781C1B76C9F739B3-1A772624F17530DF13FBF300637917F70D55C163861ADEC2DA70A248A0DE438A',
+  1800000123: '99E54519B490BE5C-E162DB0977FBDCB9B86DD8148BF1BCDC3C0303176CE39852A42B415935C20654',
+};
+for (const [ts, expected] of Object.entries(vectors)) assert.equal(generateSecMsGec(Number(ts)), expected, `ts=${ts}`);
+console.log(`✓ ${Object.keys(vectors).length} token vectors match edge-tts`);

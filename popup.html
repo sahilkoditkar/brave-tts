@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Read Aloud</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="" width="20" height="20">
+    <h1>Read Aloud</h1>
+  </header>
+
+  <div class="actions">
+    <button id="readPage" class="primary">Read this page</button>
+    <button id="readSelection">Read selection</button>
+    <button id="stop" title="Stop reading">Stop</button>
+  </div>
+  <p id="pageError" class="error" hidden></p>
+
+  <section>
+    <label for="lang">Language</label>
+    <select id="lang"></select>
+
+    <label for="voice">Voice</label>
+    <div class="row">
+      <select id="voice"></select>
+      <button id="preview" title="Hear a sample">Preview</button>
+    </div>
+    <p id="voiceError" class="error" hidden></p>
+
+    <label for="rate">Speed <output id="rateOut"></output></label>
+    <input id="rate" type="range" min="0.5" max="3" step="0.1">
+
+    <label for="pitch">Pitch <output id="pitchOut"></output></label>
+    <input id="pitch" type="range" min="-50" max="50" step="5">
+
+    <label class="check"><input id="highlightWords" type="checkbox"> Highlight each word</label>
+    <label class="check"><input id="autoScroll" type="checkbox"> Scroll to follow along</label>
+  </section>
+
+  <details id="advanced">
+    <summary>Voice source</summary>
+    <label class="check"><input type="radio" name="backend" value="edge"> Edge Read Aloud service (free, unofficial)</label>
+    <label class="check"><input type="radio" name="backend" value="azure"> My Azure Speech key (official, free tier)</label>
+    <div id="azureFields">
+      <label for="azureKey">Azure Speech key</label>
+      <input id="azureKey" type="password" autocomplete="off" spellcheck="false">
+      <label for="azureRegion">Region</label>
+      <input id="azureRegion" type="text" placeholder="eastus" spellcheck="false">
+    </div>
+  </details>
+
+  <footer>
+    Shortcut: <kbd id="shortcut">Ctrl+Shift+U</kbd> · Alt+click text to jump
+  </footer>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
