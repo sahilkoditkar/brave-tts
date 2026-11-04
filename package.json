@@ -1,0 +1,14 @@
+{
+  "name": "read-aloud-anywhere",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Build and test scripts. The extensions themselves have no runtime dependencies.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node shared/tests/token.test.mjs && node shared/tests/edge-client.test.mjs && node vscode/tests/text.test.mjs && node vscode/tests/claude.test.mjs",
+    "test:e2e": "node browser/tests/e2e/run.js && node vscode/tests/extension.test.cjs && node vscode/tests/bundle.test.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

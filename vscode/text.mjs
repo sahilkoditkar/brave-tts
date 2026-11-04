@@ -6,6 +6,8 @@
 //  - Plain text / docs: everything, with soft-wrapped lines joined
 //  - Code: comments and docstrings only, skipping lines that look like commented-out code
 
+import { sentencesOf } from '../shared/sentences.js';
+
 const PROSE_LANGUAGES = new Set(['plaintext', 'restructuredtext', 'asciidoc', 'text', 'log']);
 const MARKDOWN_LANGUAGES = new Set(['markdown', 'mdx', 'quarto', 'rmd']);
 
@@ -269,55 +271,6 @@ function commentsSpoken(text, syntax) {
 }
 
 // ---------------------------------------------------------------- sentences
-const MAX_SENTENCE = 600;
-const ABBREVIATION_END = /(?:\b(?:Mr|Mrs|Ms|Mx|Dr|Prof|Sr|Jr|St|Mt|Gen|Col|Lt|Sgt|Capt|Rev|Hon|vs|approx|Fig|No|e\.g|i\.e|etc)|(?:^|\s)\p{Lu})\.$/u;
-
-// -> [{ start, text }] with offsets into `spoken` (== document offsets), for the paragraphs that
-// overlap [from, to) (segmenting is the slow part, so the rest of a long document is skipped).
-function sentencesOf(spoken, lang, from = 0, to = spoken.length) {
-  let segmenter;
-  try { segmenter = new Intl.Segmenter(lang, { granularity: 'sentence' }); } catch { segmenter = new Intl.Segmenter('en', { granularity: 'sentence' }); }
-  const out = [];
-  const push = (start, text) => {
-    const lead = text.length - text.trimStart().length;
-    text = text.trim();
-    start += lead;
-    if (!/[\p{L}\p{N}]/u.test(text)) return;
-    while (text.length > MAX_SENTENCE) {
-      const win = text.slice(0, MAX_SENTENCE);
-      let cut = Math.max(win.lastIndexOf(', '), win.lastIndexOf('; '), win.lastIndexOf(': '));
-      if (cut < MAX_SENTENCE / 3) cut = win.lastIndexOf(' ');
-      if (cut < 1) cut = MAX_SENTENCE - 1;
-      out.push({ start, text: text.slice(0, cut + 1).trim() });
-      const rest = text.slice(cut + 1);
-      start += cut + 1 + (rest.length - rest.trimStart().length);
-      text = rest.trim();
-    }
-    if (text) out.push({ start, text });
-  };
-  const a = from > 0 ? spoken.lastIndexOf('\n', from - 1) + 1 : 0;
-  let b = spoken.indexOf('\n', Math.max(to, a));
-  if (b === -1) b = spoken.length;
-  let pos = a;
-  for (const para of spoken.slice(a, b).split('\n')) {
-    if (!/\S/.test(para)) { pos += para.length + 1; continue; } // blank (or skipped code)
-    let pendStart = -1;
-    let pendEnd = 0;
-    for (const { segment, index } of segmenter.segment(para)) {
-      if (pendStart >= 0 && ABBREVIATION_END.test(para.slice(pendStart, pendEnd).trimEnd())) {
-        pendEnd = index + segment.length;
-        continue;
-      }
-      if (pendStart >= 0) push(pos + pendStart, para.slice(pendStart, pendEnd));
-      pendStart = index;
-      pendEnd = index + segment.length;
-    }
-    if (pendStart >= 0) push(pos + pendStart, para.slice(pendStart, pendEnd));
-    pos += para.length + 1;
-  }
-  return out;
-}
-
 // -> [{ start, text, speak }] with offsets into `spoken` (== document offsets)
 export function splitSentences(spoken, lang = 'en') {
   // Text inside one sentence may span skipped regions (spaces) — collapse for speech.

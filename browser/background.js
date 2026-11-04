@@ -1,8 +1,8 @@
 import {
   DEFAULT_SETTINGS, EDGE_EXTENSION_ORIGIN, EDGE_USER_AGENT, EDGE_SEC_CH_UA,
-} from './lib/constants.js';
-import { generateMuid } from './lib/drm.js';
-import { listVoices } from './lib/tts.js';
+} from '../shared/constants.js';
+import { generateMuid } from '../shared/drm.js';
+import { listVoices } from './tts.js';
 
 // ---------- settings ----------
 // Kept in memory (the worker can restart at any time, which just reloads them).

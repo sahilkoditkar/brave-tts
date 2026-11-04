@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS } from './lib/constants.js';
+import { DEFAULT_SETTINGS } from '../shared/constants.js';
 
 const $ = (id) => document.getElementById(id);
 const bg = (msg) => chrome.runtime.sendMessage({ to: 'bg', ...msg });

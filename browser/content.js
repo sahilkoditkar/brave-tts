@@ -1,5 +1,8 @@
 // Injected into the page on demand. Extracts readable text, splits it into
 // sentences, shows a small player bar, and highlights the sentence/word being spoken.
+// Bundled into one plain script by scripts/build.mjs (pages can't load extension modules).
+import { sentencesOf } from '../shared/sentences.js';
+
 (() => {
   if (window.__browserReadAloudLoaded) return;
   window.__browserReadAloudLoaded = true;
@@ -112,49 +115,7 @@
     return { flat, segs };
   }
 
-  const MAX_SENTENCE = 600;
-  const ABBREVIATION_END = /(?:\b(?:Mr|Mrs|Ms|Mx|Dr|Prof|Sr|Jr|St|Mt|Gen|Col|Lt|Sgt|Capt|Rev|Hon|vs|approx|Fig|No|e\.g|i\.e)|(?:^|\s)\p{Lu})\.$/u;
-  function splitSentences(flat) {
-    const lang = document.documentElement.lang || navigator.language || 'en';
-    let segmenter;
-    try { segmenter = new Intl.Segmenter(lang, { granularity: 'sentence' }); } catch { segmenter = new Intl.Segmenter('en', { granularity: 'sentence' }); }
-    const out = [];
-    const push = (start, text) => {
-      const lead = text.length - text.trimStart().length;
-      text = text.trim();
-      start += lead;
-      if (!/[\p{L}\p{N}]/u.test(text)) return;
-      while (text.length > MAX_SENTENCE) {
-        const window = text.slice(0, MAX_SENTENCE);
-        let cut = Math.max(window.lastIndexOf(', '), window.lastIndexOf('; '), window.lastIndexOf(': '));
-        if (cut < MAX_SENTENCE / 3) cut = window.lastIndexOf(' ');
-        if (cut < 1) cut = MAX_SENTENCE - 1;
-        out.push({ start, text: text.slice(0, cut + 1).trim() });
-        const rest = text.slice(cut + 1);
-        start += cut + 1 + (rest.length - rest.trimStart().length);
-        text = rest.trim();
-      }
-      if (text) out.push({ start, text });
-    };
-    let pos = 0;
-    for (const para of flat.split('\n')) {
-      // The segmenter splits after "Dr." or "J." etc.; glue those back on.
-      let pendStart = -1;
-      let pendEnd = 0;
-      for (const { segment, index } of segmenter.segment(para)) {
-        if (pendStart >= 0 && ABBREVIATION_END.test(para.slice(pendStart, pendEnd).trimEnd())) {
-          pendEnd = index + segment.length;
-          continue;
-        }
-        if (pendStart >= 0) push(pos + pendStart, para.slice(pendStart, pendEnd));
-        pendStart = index;
-        pendEnd = index + segment.length;
-      }
-      if (pendStart >= 0) push(pos + pendStart, para.slice(pendStart, pendEnd));
-      pos += para.length + 1;
-    }
-    return out;
-  }
+  const splitSentences = (flat) => sentencesOf(flat, document.documentElement.lang || navigator.language || 'en');
 
   // ---------------- mapping text offsets back to DOM ranges ----------------
   let doc = null; // { flat, segs, sentences }

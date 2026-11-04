@@ -18,9 +18,10 @@ const ssmlTexts = () => readLog().filter((e) => e.type === 'ssml').map((e) => e.
 function setup() {
   execSync(`openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 1 -subj "/CN=speech.platform.bing.com" -addext "subjectAltName=DNS:speech.platform.bing.com"`, { cwd: TMP, stdio: 'ignore' });
   execSync('ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=440:duration=1.2" -ar 24000 -ac 1 -b:a 48k tone.mp3', { cwd: TMP });
-  // Test copy of the extension with <all_urls> so it can be injected without a user gesture.
+  // Test the built extension (what a release ships), plus <all_urls> so it can be injected
+  // without a user gesture.
   const ext = path.join(TMP, 'ext');
-  fs.cpSync(ROOT, ext, { recursive: true, filter: (p) => !/[\\/](\.git|tests)([\\/]|$)/.test(p.slice(ROOT.length)) });
+  execSync(`node "${path.join(ROOT, '..', 'scripts/build.mjs')}" --browser "${ext}"`, { stdio: 'inherit' });
   const manifest = JSON.parse(fs.readFileSync(path.join(ext, 'manifest.json'), 'utf8'));
   manifest.host_permissions.push('<all_urls>');
   fs.writeFileSync(path.join(ext, 'manifest.json'), JSON.stringify(manifest, null, 2));

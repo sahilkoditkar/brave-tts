@@ -2,7 +2,7 @@
 // Content script (in the page) is the controller: it sends the list of sentences
 // and commands; we report back which sentence/word is being spoken.
 
-import { synthesize, warmUp } from './lib/tts.js';
+import { synthesize, warmUp } from './tts.js';
 
 const PREFETCH_AHEAD = 2; // fetched one at a time over a single connection, while the current sentence plays
 const RECENT_MAX = 40; // finished sentences kept, so going back or reading again needs no request

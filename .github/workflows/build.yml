@@ -1,0 +1,84 @@
+# Tests and builds both extensions on every push. On main (or when run by hand from the Actions
+# tab), it also makes a draft release with the two files to install:
+#   read-aloud-browser-<version>.zip   unzip, then brave://extensions → Load unpacked
+#   read-aloud-vscode-<version>.vsix   VS Code → Extensions → ⋯ → Install from VSIX…
+# Only the newest draft is kept. Drafts are visible only to you; publish one to keep it.
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # The only dependency is the build tool (esbuild, exact version in package-lock.json).
+      # --ignore-scripts: no package code runs at install time.
+      - run: npm ci --ignore-scripts
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Built VS Code extension loads
+        run: node vscode/tests/bundle.test.cjs
+
+      # End-to-end tests against the local fake speech service (nothing is sent to Microsoft).
+      - name: Set up end-to-end tests
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          npm install --no-save --ignore-scripts playwright@1.63.0
+          npx playwright install --with-deps chromium
+          # the fake service listens on port 443
+          sudo setcap cap_net_bind_service=+ep "$(readlink -f "$(command -v node)")"
+      - name: Browser end-to-end test (built extension)
+        run: node browser/tests/e2e/run.js
+      - name: VS Code end-to-end test
+        run: node vscode/tests/extension.test.cjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: read-aloud
+          path: |
+            dist/*.zip
+            dist/*.vsix
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: read-aloud
+          path: dist
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # replace older drafts, so the newest build is always the one at the top
+          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' |
+            while read -r tag; do gh release delete "$tag" --yes; done
+          short="${GITHUB_SHA::7}"
+          tag="build-$(date -u +%Y%m%d-%H%M)-$short"
+          notes="Built from ${GITHUB_REF_NAME} at ${short} (${{ github.server_url }}/${{ github.repository }}/commit/${GITHUB_SHA}).
+
+          **Browser (Brave/Chromium):** download the .zip, unzip it, then brave://extensions → Developer mode → Load unpacked → pick the read-aloud-browser folder. To update: unzip the new build over the same folder (same folder = same extension, settings kept) and press the reload icon on the extension.
+
+          **VS Code:** download the .vsix, then Extensions → ⋯ → Install from VSIX…"
+          gh release create "$tag" dist/*.zip dist/*.vsix --draft --target "$GITHUB_SHA" \
+            --title "Build ${short} ($(date -u +%Y-%m-%d))" --notes "$notes"

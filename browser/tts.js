@@ -2,10 +2,10 @@
 //  - edge:  Edge's online Read Aloud WebSocket endpoint (free, undocumented)
 //  - azure: Azure Speech REST API with your own key (official; free tier available)
 
-import { VOICE_LIST_URL, SEC_MS_GEC_VERSION, OUTPUT_FORMAT } from './constants.js';
-import { generateSecMsGec, adjustClockSkew } from './drm.js';
-import { buildSsml, localeOf, CONNECT_TIMEOUT_MS } from './ssml.js';
-import { EdgeClient } from './edge-client.js';
+import { VOICE_LIST_URL, SEC_MS_GEC_VERSION, OUTPUT_FORMAT } from '../shared/constants.js';
+import { generateSecMsGec, adjustClockSkew } from '../shared/drm.js';
+import { buildSsml, localeOf, CONNECT_TIMEOUT_MS } from '../shared/ssml.js';
+import { EdgeClient } from '../shared/edge-client.js';
 
 async function syncClockWithServer() {
   try {
