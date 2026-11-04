@@ -38,9 +38,15 @@ being spoken.
   The status bar says which session it picked.
 - **Read Aloud: Read Reply from a Claude Code Session…** (also in the menu): pick any session from a
   list.
-- In the Claude Code panel, select a word and press **⌘⌥R** to read from that word to the end of the
-  reply. Select a longer passage to read just that. With nothing selected, ⌘⌥R reads the session's
-  last reply.
+- **In the Claude Code panel**, like the browser:
+  - Right-click a word → **Read Aloud from Here** (on a Mac, right-click selects the word), or
+    select a word and press **⌘⌥R**: reads from that word to the end of the reply.
+  - Select a longer passage → right-click → **Read Aloud from Here** (or ⌘⌥R): reads just that
+    passage, still skipping any code inside it.
+  - Nothing selected: ⌘⌥R reads the session's last reply.
+  - If that ever reads the whole last reply instead of your selection, press **⌘C** first, then
+    **⌘⌥R**. The copied text is used, but only if it really appears in a Claude reply. Details of
+    what happened go to **View → Output → Read Aloud**.
 - **Auto-read** (menu, or **Read Aloud: Toggle Auto-Read Claude Code Replies**): speaks a reply as
   soon as Claude finishes it. By default only for the session you're looking at (setting
   `readAloud.claude.autoReadSessions`: `focused` or `all`).
@@ -71,5 +77,5 @@ node vscode/scripts/pack-vsix.mjs
 Then in VS Code, open **Extensions** → **⋯** → **Install from VSIX…** → pick
 `vscode/dist/read-aloud-<version>.vsix`.
 
-It has no npm dependencies. The token, voices and protocol code are shared with the browser
-extension in `../browser/lib`.
+It has no npm dependencies. The token, voices and protocol code come from `../shared`, which is
+shared with the browser extension.

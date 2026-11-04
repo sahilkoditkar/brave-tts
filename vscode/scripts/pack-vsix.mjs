@@ -12,14 +12,14 @@ const ROOT = path.resolve(VSCODE_DIR, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(VSCODE_DIR, 'package.json'), 'utf8'));
 
 // Layout inside the package mirrors the repo, so relative imports keep working:
-//   extension/package.json, extension/vscode/*.js|mjs, extension/browser/lib/*
+//   extension/package.json, extension/vscode/*.js|mjs, extension/shared/*
 const files = new Map();
 const add = (zipPath, srcPath) => files.set(zipPath, fs.readFileSync(srcPath));
 
 const manifest = { ...pkg, main: './vscode/extension.js', icon: 'icon.png' };
 files.set('extension/package.json', Buffer.from(JSON.stringify(manifest, null, 2)));
 for (const f of ['extension.js', 'engine.mjs', 'text.mjs', 'player.mjs', 'claude.mjs']) add(`extension/vscode/${f}`, path.join(VSCODE_DIR, f));
-for (const f of ['constants.js', 'drm.js', 'ssml.js', 'package.json']) add(`extension/browser/lib/${f}`, path.join(ROOT, 'browser/lib', f));
+for (const f of ['constants.js', 'drm.js', 'ssml.js', 'package.json']) add(`extension/shared/${f}`, path.join(ROOT, 'shared', f));
 add('extension/readme.md', path.join(VSCODE_DIR, 'README.md'));
 add('extension/icon.png', path.join(ROOT, 'browser/icons/icon128.png'));
 

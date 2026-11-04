@@ -3,7 +3,7 @@ import https from 'node:https';
 import http from 'node:http';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { generateSecMsGec } from '../../lib/drm.js';
+import { generateSecMsGec } from '../../../shared/drm.js';
 
 const dir = new URL('.', import.meta.url).pathname;
 const tmp = process.env.E2E_TMP;

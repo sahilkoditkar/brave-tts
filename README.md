@@ -17,9 +17,11 @@ brought the same voices into VS Code for reading docs.
 |---|---|
 | [`browser/`](browser) | Brave/Chromium extension: reads web pages with sentence and word highlighting |
 | [`vscode/`](vscode) | VS Code extension: reads Markdown/docs, only the comments in code, and Claude Code replies |
+| [`shared/`](shared) | The voice engine both use: request token, constants, SSML/protocol |
 
-Both share one voice engine (`browser/lib`): the request token, the voice list, and the SSML
-protocol.
+`shared/` is the single source of truth. Brave can only load files inside the extension folder, so
+`browser/lib/` holds an exact copy. `node scripts/sync-shared.mjs` refreshes it, and `--check` fails
+if it's stale.
 
 ## Browser extension
 
@@ -47,8 +49,9 @@ floating player (shadow DOM) context menu, shortcut      reports sentence/word p
 - **Markdown / plain text:** reads the prose. It skips syntax, URLs, images, HTML and fenced code.
 - **Code:** reads **only comments and docstrings**, and skips lines that look like commented-out
   code.
-- **Claude Code replies:** reads the latest reply (⌘⌥U), reads from a word you select in the
-  Claude panel (⌘⌥R), or auto-reads each reply when it finishes. Tool calls, thinking and code are
+- **Claude Code replies:** reads the latest reply of the session you're looking at (⌘⌥U), reads
+  from a word you select or right-click in the Claude panel, or auto-reads each reply when it
+  finishes. Tool calls, thinking and code are
   skipped. Replies come from Claude Code's local session files (read-only), since its chat panel
   can't be read by other extensions.
 - Right-click → **Read Aloud from Here** (or **Read Aloud Selection**), ⌘⌥R to start or pause,
@@ -61,7 +64,7 @@ floating player (shadow DOM) context menu, shortcut      reports sentence/word p
 - **Speaking like Edge.** The voice service expects Edge's own client. In the browser,
   `declarativeNetRequest` sets the WebSocket handshake headers (Origin, User-Agent) that browser
   JavaScript isn't normally allowed to set. In VS Code, the hand-rolled WebSocket client sets them
-  directly. Both generate the time-based request token the service requires (`browser/lib/drm.js`).
+  directly. Both generate the time-based request token the service requires (`shared/drm.js`).
   That's a port of the open-source [edge-tts](https://github.com/rany2/edge-tts) project's
   implementation, checked against its output.
 - **Mapping audio back to text.** In the browser, text from DOM text nodes goes into a flat string
@@ -104,8 +107,8 @@ Extensions are a common attack route, so this one is kept deliberately small:
 ## When it breaks
 
 The free endpoint is unofficial, so expect breakage. The usual fix is to bump the version constants
-in `browser/lib/constants.js` and/or port the latest token change into `browser/lib/drm.js` from a
-newer edge-tts release. That fixes both extensions.
+in `shared/constants.js` and/or port the latest token change into `shared/drm.js` from a newer
+edge-tts release, then run `node scripts/sync-shared.mjs`. That fixes both extensions.
 
 There's an official fallback built into both: switch the voice source to *Azure Speech key*. Azure
 Speech has a free tier with the same neural voices. Word highlighting isn't available there.
@@ -121,7 +124,8 @@ folder. It can't run on `brave://` pages, the extension store, or the built-in P
 **Tests:**
 
 ```bash
-node browser/tests/token.test.mjs
+node scripts/sync-shared.mjs --check
+node shared/tests/token.test.mjs
 node vscode/tests/text.test.mjs
 node vscode/tests/claude.test.mjs
 node browser/tests/e2e/run.js         # needs Playwright, openssl, ffmpeg, port 443

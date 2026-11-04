@@ -12,7 +12,7 @@ let mods;
 async function load() {
   if (!mods) {
     const [engine, text, player, ssml, claude] = await Promise.all([
-      import('./engine.mjs'), import('./text.mjs'), import('./player.mjs'), import('../browser/lib/ssml.js'),
+      import('./engine.mjs'), import('./text.mjs'), import('./player.mjs'), import('../shared/ssml.js'),
       import('./claude.mjs'),
     ]);
     mods = { engine, text, player, ssml, claude };
@@ -21,6 +21,8 @@ async function load() {
 }
 
 let ctx;
+let log = { appendLine() {} }; // "Read Aloud" output channel (View → Output) for troubleshooting
+const trace = (msg) => log.appendLine(`[${new Date().toLocaleTimeString()}] ${msg}`);
 let statusItem; // main button: menu when idle, play/pause while reading
 let stopItem;
 let prevItem;
@@ -334,18 +336,27 @@ async function pickSessionAndRead() {
 
 // Copy whatever is selected in the focused panel (e.g. the Claude Code chat webview, which other
 // extensions can't read directly). The previous clipboard text is restored afterwards.
+// -> { copied: text from the automatic copy ('' if it didn't work), previous: clipboard before }
 async function copyFocusedSelection() {
   const previous = await vscode.env.clipboard.readText();
   const sentinel = `\u2063read-aloud-${Date.now()}`;
   await vscode.env.clipboard.writeText(sentinel);
-  await vscode.commands.executeCommand('editor.action.clipboardCopyAction');
   let text = sentinel;
-  for (let i = 0; i < 20 && text === sentinel; i++) {
-    await new Promise((r) => setTimeout(r, 30));
-    text = await vscode.env.clipboard.readText();
+  for (const command of ['editor.action.clipboardCopyAction', 'execCopy']) {
+    try {
+      await vscode.commands.executeCommand(command);
+    } catch (err) {
+      trace(`copy via ${command} failed: ${err.message}`);
+      continue;
+    }
+    for (let i = 0; i < 20 && text === sentinel; i++) {
+      await new Promise((r) => setTimeout(r, 30));
+      text = await vscode.env.clipboard.readText();
+    }
+    if (text !== sentinel) { trace(`copied ${text.length} chars via ${command}`); break; }
   }
   await vscode.env.clipboard.writeText(previous);
-  return text === sentinel ? '' : text;
+  return { copied: text === sentinel ? '' : text, previous };
 }
 
 // Find a selected word/phrase in the session you're looking at (then other recent ones)
@@ -364,13 +375,45 @@ function findInClaudeSession(selected) {
   return null;
 }
 
+// ⌘⌥R / right-click in the Claude Code panel:
+//   a word or short phrase selected -> read from there to the end of that reply
+//   a longer passage selected      -> read just that
+//   nothing selected               -> read the session's last reply
+// If the automatic copy doesn't work, text you copied yourself (⌘C) is used instead, but only
+// if it really appears in a Claude reply, so random clipboard contents are never read.
 async function readPanelSelection() {
   await load();
-  const selected = (await copyFocusedSelection()).trim();
-  if (!selected) return readLastClaudeReply();
+  const { copied, previous } = await copyFocusedSelection();
+  let selected = copied.trim();
+  let source = 'selection';
+  if (!selected && previous?.trim() && previous.trim().length <= 20000) {
+    const probe = previous.trim().split('\n').find((l) => l.trim().length > 0)?.trim().slice(0, 80) || '';
+    if (probe && findInClaudeSession(probe)) {
+      selected = previous.trim();
+      source = 'clipboard';
+    }
+  }
+  trace(`read selection: source=${selected ? source : 'none'} chars=${selected.length}`);
+  if (!selected) {
+    vscode.window.setStatusBarMessage('Read Aloud: no selection detected — reading the last reply (tip: ⌘C the text, then ⌘⌥R)', 5000);
+    return readLastClaudeReply();
+  }
   if (mods.text.isShortSelection(selected)) {
     const hit = findInClaudeSession(selected);
+    trace(hit ? `found "${selected}" in "${hit.title}"` : `"${selected}" not found in recent Claude replies`);
     if (hit) return startMarkdown(hit.markdown, hit.title || 'Claude', { from: hit.from });
+  }
+  if (!mods.text.isShortSelection(selected)) {
+    // A longer selection copied from a reply: read it, starting where it starts in the reply
+    const hit = findInClaudeSession(selected.split('\n')[0].trim().slice(0, 80));
+    if (hit) {
+      const spoken = mods.text.spokenText(hit.markdown, 'markdown');
+      const end = mods.text.findSpoken(spoken, selected.split('\n').filter((l) => l.trim()).pop().trim().slice(-60));
+      if (end >= hit.from) {
+        const tail = selected.split('\n').filter((l) => l.trim()).pop().trim().slice(-60);
+        return startMarkdown(hit.markdown.slice(0, end + tail.length), hit.title || 'Claude', { from: hit.from });
+      }
+    }
   }
   return startMarkdown(selected, 'Selection', { languageId: 'plaintext' });
 }
@@ -489,6 +532,8 @@ async function setAzureKey() {
 // ---------------------------------------------------------------- lifecycle
 function activate(context) {
   ctx = context;
+  log = vscode.window.createOutputChannel('Read Aloud');
+  context.subscriptions.push(log);
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'read-aloud-'));
 
   sentenceDeco = vscode.window.createTextEditorDecorationType({
@@ -523,6 +568,7 @@ function activate(context) {
   reg('readAloud.setAzureKey', setAzureKey);
   reg('readAloud.readLastClaudeReply', readLastClaudeReply);
   reg('readAloud.readPanelSelection', readPanelSelection);
+  reg('readAloud.readPanelFromHere', readPanelSelection); // right-click menu inside webviews (Claude Code panel)
   reg('readAloud.toggleAutoReadClaude', toggleAutoRead);
   reg('readAloud.readClaudeSession', pickSessionAndRead);
   reg('readAloud.menu', menu);

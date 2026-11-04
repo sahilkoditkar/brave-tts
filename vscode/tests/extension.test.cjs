@@ -38,7 +38,9 @@ const messages = [];
 let editor;
 let clipboard = 'user clipboard';
 let panelSelection = '';
-let activeTab = null; // simulated active editor tab (Claude Code tabs are labelled with the session title) // what's selected in the (simulated) Claude Code webview
+let activeTab = null;
+let copyWorks = true; // simulate the automatic copy failing in the webview
+const logLines = []; // simulated active editor tab (Claude Code tabs are labelled with the session title) // what's selected in the (simulated) Claude Code webview
 const mkEvent = (name) => (fn) => { (listeners[name] ||= []).push(fn); return { dispose() {} }; };
 const statusItems = [];
 const vscodeMock = {
@@ -55,6 +57,7 @@ const vscodeMock = {
     get activeTextEditor() { return editor; },
     get visibleTextEditors() { return editor ? [editor] : []; },
     createTextEditorDecorationType: (opts) => ({ opts, dispose() {} }),
+    createOutputChannel: () => ({ appendLine: (l) => logLines.push(l), dispose() {} }),
     createStatusBarItem: () => { const s = { text: '', show() { this.visible = true; }, hide() { this.visible = false; }, dispose() {} }; statusItems.push(s); return s; },
     showInformationMessage: (m) => { messages.push(['info', m]); },
     showErrorMessage: (m) => { messages.push(['error', m]); },
@@ -72,7 +75,7 @@ const vscodeMock = {
     registerCommand: (id, fn) => { commands[id] = fn; return { dispose() {} }; },
     executeCommand: async (id) => {
       // the real copy command copies the focused webview's selection (async, like a webview)
-      if (id === 'editor.action.clipboardCopyAction' && panelSelection) setTimeout(() => { clipboard = panelSelection; }, 20);
+      if (id === 'editor.action.clipboardCopyAction' && panelSelection && copyWorks) setTimeout(() => { clipboard = panelSelection; }, 20);
     },
   },
 };
@@ -265,6 +268,30 @@ const readLog = () => fs.readFileSync(path.join(TMP, 'server.log'), 'utf8').trim
     await commands['readAloud.stop']();
     assert.ok(!prevI.visible && !speedI.visible && mainI.command === 'readAloud.menu', 'idle: just the menu button');
     console.log('✓ status bar controls (prev / pause / next / speed / stop) and speed nudge');
+
+    // 14) automatic copy fails -> text the user copied (⌘C) is used, if it's from a Claude reply
+    activeTab = { label: 'ml sidechat' };
+    copyWorks = false;
+    panelSelection = 'side';
+    clipboard = 'side';
+    assert.deepEqual(await spokenNow(() => commands['readAloud.readPanelSelection']()), ['side chat.']);
+    clipboard = 'some unrelated thing I copied earlier';
+    assert.deepEqual(await spokenNow(() => commands['readAloud.readPanelSelection']()), ['Reply from the side chat.'],
+      'unrelated clipboard is ignored -> last reply of the focused session');
+    assert.equal(clipboard, 'some unrelated thing I copied earlier', 'clipboard untouched');
+    copyWorks = true;
+    console.log('✓ ⌘C fallback when automatic copy fails; unrelated clipboard ignored');
+
+    // 15) right-click "Read Aloud from Here" in the panel; long selection spanning a code block skips the code
+    activeTab = null;
+    panelSelection = 'rejected';
+    assert.deepEqual(await spokenNow(() => commands['readAloud.readPanelFromHere']()),
+      ['Run that, then tell me.', 'rejected the push because the token lacks the workflow scope.']);
+    panelSelection = 'GitHub rejected the push because the token lacks the workflow scope.\ngh auth refresh -s workflow\nRun that, then tell me.';
+    assert.deepEqual(await spokenNow(() => commands['readAloud.readPanelSelection']()),
+      ['GitHub rejected the push because the token lacks the workflow scope.', 'Run that, then tell me.']);
+    assert.ok(logLines.some((l) => l.includes('read selection')), 'troubleshooting log written');
+    console.log('✓ panel right-click; long selection maps to the reply and skips code');
 
     ext.deactivate();
     console.log('ALL PASSED');

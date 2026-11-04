@@ -2,7 +2,7 @@
   "name": "read-aloud",
   "displayName": "Read Aloud Anywhere (personal)",
   "description": "Reads Markdown, docs, code comments and Claude Code replies aloud with natural neural voices. Personal use.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "sahilkoditkar",
   "private": true,
   "license": "UNLICENSED",
@@ -107,6 +107,11 @@
         "command": "readAloud.slower",
         "title": "Slower",
         "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.readPanelFromHere",
+        "title": "Read Aloud from Here",
+        "category": "Read Aloud"
       }
     ],
     "menus": {
@@ -139,6 +144,10 @@
         {
           "command": "readAloud.stop",
           "when": "readAloud.active"
+        },
+        {
+          "command": "readAloud.readPanelFromHere",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -146,6 +155,12 @@
           "command": "readAloud.readFromHere",
           "when": "resourceLangId == markdown && !readAloud.active",
           "group": "navigation"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "readAloud.readPanelFromHere",
+          "group": "z_readaloud"
         }
       ]
     },

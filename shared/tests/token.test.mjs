@@ -1,7 +1,7 @@
 // Sec-MS-GEC token vectors produced by edge-tts 7.3.1's generate_sec_ms_gec_v2().
 // Run: node tests/token.test.mjs
 import assert from 'node:assert/strict';
-import { generateSecMsGec } from '../lib/drm.js';
+import { generateSecMsGec } from '../drm.js';
 
 const vectors = {
   0: '52BC7A17B50DFEC9-28C4394775C8751CD2F6859C030C06DB1489ACAB3B3A7651831FC26895177ED6',

@@ -6,11 +6,11 @@ import crypto from 'node:crypto';
 import {
   WSS_URL, VOICE_LIST_URL, SEC_MS_GEC_VERSION, OUTPUT_FORMAT,
   EDGE_EXTENSION_ORIGIN, EDGE_USER_AGENT, EDGE_SEC_CH_UA,
-} from '../browser/lib/constants.js';
-import { generateSecMsGec, generateMuid, adjustClockSkew } from '../browser/lib/drm.js';
+} from '../shared/constants.js';
+import { generateSecMsGec, generateMuid, adjustClockSkew } from '../shared/drm.js';
 import {
   uuid, buildSsml, localeOf, parseHeaders, speechConfigMessage, ssmlMessage,
-} from '../browser/lib/ssml.js';
+} from '../shared/ssml.js';
 
 const MUID = generateMuid();
 const EDGE_HEADERS = {
