@@ -74,15 +74,23 @@ server.on('upgrade', (req, socket) => {
       const meta = { Metadata: words.map((w, k) => ({ Type: 'WordBoundary', Data: { Offset: 500000 + k * (11000000 / Math.max(words.length, 1)), Duration: 1000000, text: { Text: w, Length: w.length, BoundaryType: 'WordBoundary' } } })) };
       socket.write(frame(1, Buffer.from(hdr('audio.metadata') + JSON.stringify(meta))));
       const audioHdr = Buffer.from(`X-RequestId:${rid}\r\nContent-Type:audio/mpeg\r\nX-StreamId:1\r\nPath:audio\r\n`);
-      const half = Math.floor(mp3.length / 2);
-      for (const part of [mp3.subarray(0, half), mp3.subarray(half)]) {
-        const len = Buffer.alloc(2); len.writeUInt16BE(audioHdr.length);
-        socket.write(frame(2, Buffer.concat([len, audioHdr, part])));
-      }
+      // FAKE_CHUNK_DELAY_MS simulates the real service streaming audio as it synthesizes.
+      const delay = Number(process.env.FAKE_CHUNK_DELAY_MS || 0);
+      const parts = [];
+      const step = Math.ceil(mp3.length / 4);
+      for (let p = 0; p < mp3.length; p += step) parts.push(mp3.subarray(p, p + step));
       const endHdr = Buffer.from(`X-RequestId:${rid}\r\nX-StreamId:1\r\nPath:audio\r\n`);
-      const len2 = Buffer.alloc(2); len2.writeUInt16BE(endHdr.length);
-      socket.write(frame(2, Buffer.concat([len2, endHdr])));
-      socket.write(frame(1, Buffer.from(hdr('turn.end') + '{}')));
+      const sendAll = async () => {
+        for (const part of parts) {
+          const len = Buffer.alloc(2); len.writeUInt16BE(audioHdr.length);
+          socket.write(frame(2, Buffer.concat([len, audioHdr, part])));
+          if (delay) await new Promise((r) => setTimeout(r, delay));
+        }
+        const len2 = Buffer.alloc(2); len2.writeUInt16BE(endHdr.length);
+        socket.write(frame(2, Buffer.concat([len2, endHdr])));
+        socket.write(frame(1, Buffer.from(hdr('turn.end') + '{}')));
+      };
+      sendAll();
     });
   });
   socket.on('error', () => {});

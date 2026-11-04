@@ -29,7 +29,8 @@ function setup() {
 
 (async () => {
   const ext = setup();
-  const server = spawn(process.execPath, [path.join(HERE, 'fake-server.mjs')], { env: { ...process.env, E2E_TMP: TMP }, stdio: 'inherit' });
+  // 250 ms between audio chunks: a sentence takes ~1 s to arrive, like the real streaming service.
+  const server = spawn(process.execPath, [path.join(HERE, 'fake-server.mjs')], { env: { ...process.env, E2E_TMP: TMP, FAKE_CHUNK_DELAY_MS: '250' }, stdio: 'inherit' });
   await new Promise((r) => setTimeout(r, 800));
   const ctx = await chromium.launchPersistentContext(path.join(TMP, 'profile'), {
     headless: true, channel: 'chromium', viewport: { width: 1000, height: 700 },
@@ -84,17 +85,39 @@ function setup() {
     assert.ok(readLog().some((e) => e.type === 'ssml' && e.rate === '+20%'), 'rate change applied');
     console.log('✓ speed change, alt+click');
 
-    // Selection only
+    // Selection only — and it must start speaking before the first sentence has fully arrived
     fs.writeFileSync(LOG, '');
     await page.evaluate(() => {
       const li = document.querySelectorAll('li');
       const r = document.createRange(); r.setStart(li[0].firstChild, 6); r.setEnd(li[1].firstChild, 6);
       getSelection().removeAllRanges(); getSelection().addRange(r);
     });
+    await page.waitForTimeout(31000); // let the idle audio player close, like a real cold start
+    const t0 = Date.now();
     await send({ to: 'bg', type: 'start', tabId, mode: 'selection' });
+    await page.waitForFunction(() => CSS.highlights.get('read-aloud-word')?.size > 0, null, { timeout: 10000, polling: 20 });
+    const firstWordMs = Date.now() - t0;
+    console.log(`  time to first spoken word (cold start): ${firstWordMs} ms`);
+    assert.ok(firstWordMs < 900, `streaming start should beat the ~1 s full-sentence wait (got ${firstWordMs} ms)`);
     await playerGone();
     assert.deepEqual(ssmlTexts(), ['item in a list', 'Second']);
     console.log('✓ selection mode');
+
+    // Right-click a word -> "Read aloud from here" starts at that word.
+    // (macOS selects the right-clicked word; simulate that selection here.)
+    fs.writeFileSync(LOG, '');
+    await page.evaluate(() => {
+      const t = document.querySelectorAll('p')[1].firstChild;
+      const i = t.data.indexOf('remembered');
+      const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + 'remembered'.length);
+      getSelection().removeAllRanges(); getSelection().addRange(r);
+    });
+    await send({ to: 'bg', type: 'start', tabId, mode: 'here' });
+    await page.waitForTimeout(500);
+    assert.equal(ssmlTexts()[0], 'remembered when the ships stopped coming.');
+    await send({ to: 'bg', type: 'stopAll' });
+    await playerGone();
+    console.log('✓ read aloud from here (right-click)');
 
     // Read from caret, then Stop from popup closes the player bar
     fs.writeFileSync(LOG, '');

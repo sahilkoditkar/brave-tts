@@ -43,8 +43,11 @@ async function installHeaderRules() {
 
 function createMenus() {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: 'read-selection', title: 'Read aloud selection', contexts: ['selection'] });
-    chrome.contextMenus.create({ id: 'read-page', title: 'Read aloud this page', contexts: ['page'] });
+    chrome.contextMenus.create({
+      id: 'read-here',
+      title: 'Read aloud from here',
+      contexts: ['page', 'selection', 'link'],
+    });
   });
 }
 
@@ -61,6 +64,7 @@ async function hasOffscreen() {
   return contexts.length > 0;
 }
 async function ensureOffscreen() {
+  if (creating) { await creating; return; } // still loading: don't treat it as ready yet
   if (await hasOffscreen()) return;
   if (!creating) {
     creating = chrome.offscreen.createDocument({
@@ -76,11 +80,21 @@ async function ensureOffscreen() {
 async function toOffscreen(msg) {
   await ensureOffscreen();
   if (msg.type === 'load' || msg.type === 'settings') msg.settings = await getSettings();
-  return chrome.runtime.sendMessage({ ...msg, to: 'offscreen' });
+  // A just-created offscreen page may still be loading its scripts: retry briefly until it listens.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await chrome.runtime.sendMessage({ ...msg, to: 'offscreen' });
+    } catch (err) {
+      if (attempt >= 40 || !String(err?.message).includes('Receiving end does not exist')) throw err;
+      await new Promise((r) => setTimeout(r, 25));
+      await ensureOffscreen();
+    }
+  }
 }
 
 // ---------- injecting the page reader ----------
 async function startInTab(tabId, mode) {
+  ensureOffscreen().catch(() => {}); // warm up the audio player while the page script loads
   try {
     await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] });
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
@@ -96,7 +110,7 @@ async function startInTab(tabId, mode) {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab?.id) return;
-  startInTab(tab.id, info.menuItemId === 'read-selection' ? 'selection' : 'page');
+  if (info.menuItemId === 'read-here') startInTab(tab.id, 'here');
 });
 
 chrome.commands.onCommand.addListener((command, tab) => {

@@ -182,16 +182,43 @@
     }
   }
 
-  function sentenceAtDomPoint(node, offset) {
-    if (!doc) return -1;
+  // DOM point -> offset in the flat text (or -1). For element points (e.g. right-click
+  // on an image), use the first text after it.
+  function flatPosAt(node, offset) {
+    if (!doc || !node) return -1;
     const seg = doc.segs.find((s) => s.node === node);
-    if (!seg) return -1;
-    const pos = seg.flatStart + Math.max(0, offset - seg.nodeOffset);
+    if (seg) return seg.flatStart + Math.min(seg.len, Math.max(0, offset - seg.nodeOffset));
+    const after = doc.segs.find((s) => node.compareDocumentPosition(s.node) & Node.DOCUMENT_POSITION_FOLLOWING);
+    return after ? after.flatStart : -1;
+  }
+
+  function sentenceAtPos(pos) {
     let found = -1;
     for (let k = 0; k < doc.sentences.length; k++) {
       if (doc.sentences[k].start <= pos) found = k; else break;
     }
     return found;
+  }
+
+  function sentenceAtDomPoint(node, offset) {
+    const pos = flatPosAt(node, offset);
+    return pos < 0 ? -1 : sentenceAtPos(pos);
+  }
+
+  // Start reading at the word under a DOM point: split its sentence at that word.
+  function startIndexAtWord(node, offset) {
+    const pos = flatPosAt(node, offset);
+    if (pos < 0) return 0;
+    const k = sentenceAtPos(pos);
+    if (k < 0) return 0;
+    const s = doc.sentences[k];
+    let w = Math.min(pos, s.start + s.text.length - 1);
+    while (w > s.start && !/\s/.test(doc.flat[w - 1])) w--;
+    if (w <= s.start) return k;
+    const before = doc.flat.slice(s.start, w).trimEnd();
+    const after = doc.flat.slice(w, s.start + s.text.length);
+    doc.sentences.splice(k, 1, { start: s.start, text: before }, { start: w, text: after });
+    return k + 1;
   }
 
   // ---------------- highlighting ----------------
@@ -398,6 +425,15 @@
     const hasSelection = sel && sel.rangeCount && !sel.isCollapsed && sel.toString().trim();
     let extracted;
     let startIdx = 0;
+    // "Read aloud from here" (context menu): start at the word that was right-clicked.
+    // macOS selects the word under the cursor on right-click; elsewhere, the user clicks
+    // the spot first (a collapsed caret). Either way the selection marks the point, so no
+    // always-on script or "all sites" permission is needed.
+    let point = null;
+    if (mode === 'here' && sel?.rangeCount) {
+      const r = sel.getRangeAt(0);
+      point = { node: r.startContainer, offset: r.startOffset };
+    }
     if (mode === 'selection' || (mode === 'auto' && hasSelection)) {
       if (!hasSelection) return;
       const range = sel.getRangeAt(0);
@@ -405,7 +441,8 @@
       if (root.nodeType !== Node.ELEMENT_NODE) root = root.parentElement;
       extracted = extract({ range, root, pageMode: false });
     } else {
-      const root = findMainRoot();
+      let root = findMainRoot();
+      if (point && !root.contains(point.node)) root = document.body;
       extracted = extract({ root, pageMode: true });
     }
     const sentences = splitSentences(extracted.flat);
@@ -415,8 +452,10 @@
       flash('Nothing readable found on this page.');
       return;
     }
-    // "Read from here": if the user clicked into the text (collapsed caret), start there.
-    if (mode !== 'selection' && sel?.rangeCount && sel.isCollapsed) {
+    if (point) {
+      startIdx = startIndexAtWord(point.node, point.offset);
+    } else if (mode !== 'selection' && sel?.rangeCount && sel.isCollapsed) {
+      // shortcut after clicking into the text (collapsed caret): start at that sentence
       const k = sentenceAtDomPoint(sel.anchorNode, sel.anchorOffset);
       if (k > 0) startIdx = k;
     }
@@ -534,7 +573,7 @@
       if (msg.cmd === 'toggle') {
         if (active) togglePause(); else start('auto');
       } else {
-        start(msg.cmd); // 'page' | 'selection'
+        start(msg.cmd); // 'page' | 'selection' | 'here'
       }
       sendResponse({ ok: true });
       return;

@@ -2,68 +2,11 @@
 //  - edge:  Edge's online Read Aloud WebSocket endpoint (free, undocumented)
 //  - azure: Azure Speech REST API with your own key (official; free tier available)
 
-import {
-  WSS_URL, VOICE_LIST_URL, SEC_MS_GEC_VERSION, OUTPUT_FORMAT,
-} from './constants.js';
+import { WSS_URL, VOICE_LIST_URL, SEC_MS_GEC_VERSION, OUTPUT_FORMAT } from './constants.js';
 import { generateSecMsGec, adjustClockSkew } from './drm.js';
-
-const uuid = () => crypto.randomUUID().replaceAll('-', '');
-
-function escapeXml(s) {
-  return s
-    // characters the service rejects (e.g. vertical tab from OCR'd PDFs)
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ' ')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
-
-function localeOf(voice) {
-  const m = /^([a-z]{2,})-([A-Z]{2,})/.exec(voice);
-  return m ? `${m[1]}-${m[2]}` : 'en-US';
-}
-
-// "en-US-AriaNeural" -> "Microsoft Server Speech Text to Speech Voice (en-US, AriaNeural)"
-function edgeLongVoiceName(voice) {
-  const m = /^([a-z]{2,})-([A-Z]{2,})-(.+Neural)$/.exec(voice);
-  if (!m) return voice;
-  let [, lang, region, name] = m;
-  const dash = name.indexOf('-');
-  if (dash !== -1) {
-    region = `${region}-${name.slice(0, dash)}`;
-    name = name.slice(dash + 1);
-  }
-  return `Microsoft Server Speech Text to Speech Voice (${lang}-${region}, ${name})`;
-}
-
-function prosody({ rate = 1, pitch = 0 }) {
-  const r = Math.round((rate - 1) * 100);
-  const p = Math.round(pitch);
-  return { rate: `${r >= 0 ? '+' : ''}${r}%`, pitch: `${p >= 0 ? '+' : ''}${p}Hz` };
-}
-
-function buildSsml(text, voiceName, locale, settings) {
-  const { rate, pitch } = prosody(settings);
-  return (
-    `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${locale}'>` +
-    `<voice name='${voiceName}'><prosody pitch='${pitch}' rate='${rate}' volume='+0%'>` +
-    `${escapeXml(text)}</prosody></voice></speak>`
-  );
-}
-
-// JS-style date string the Edge client sends.
-function dateString() {
-  return new Date().toUTCString().replace(/^(\w+), (\d+) (\w+) (\d+) (.+) GMT$/,
-    (_, wd, d, mo, y, t) => `${wd} ${mo} ${d} ${y} ${t} GMT+0000 (Coordinated Universal Time)`);
-}
-
-function parseHeaders(text) {
-  const headers = {};
-  for (const line of text.split('\r\n')) {
-    const i = line.indexOf(':');
-    if (i > 0) headers[line.slice(0, i)] = line.slice(i + 1);
-  }
-  return headers;
-}
+import {
+  uuid, buildSsml, localeOf, parseHeaders, speechConfigMessage, ssmlMessage,
+} from './ssml.js';
 
 async function syncClockWithServer() {
   try {
@@ -74,7 +17,7 @@ async function syncClockWithServer() {
   } catch { /* ignore */ }
 }
 
-function edgeSynthOnce(text, settings, signal) {
+function edgeSynthOnce(text, settings, signal, hooks = {}) {
   return new Promise((resolve, reject) => {
     const url = `${WSS_URL}&ConnectionId=${uuid()}&Sec-MS-GEC=${generateSecMsGec()}` +
       `&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}`;
@@ -100,15 +43,8 @@ function edgeSynthOnce(text, settings, signal) {
 
     ws.onopen = () => {
       opened = true;
-      ws.send(
-        `X-Timestamp:${dateString()}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
-        '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"true"},' +
-        `"outputFormat":"${OUTPUT_FORMAT}"}}}}\r\n`,
-      );
-      const ssml = buildSsml(text, edgeLongVoiceName(settings.voice), localeOf(settings.voice), settings);
-      ws.send(
-        `X-RequestId:${uuid()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${dateString()}Z\r\nPath:ssml\r\n\r\n${ssml}`,
-      );
+      ws.send(speechConfigMessage());
+      ws.send(ssmlMessage(text, settings));
     };
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
@@ -119,7 +55,9 @@ function edgeSynthOnce(text, settings, signal) {
           try {
             for (const m of JSON.parse(body).Metadata || []) {
               if (m.Type === 'WordBoundary') {
-                words.push({ offset: m.Data.Offset, duration: m.Data.Duration, text: m.Data.text.Text });
+                const w = { offset: m.Data.Offset, duration: m.Data.Duration, text: m.Data.text.Text };
+                words.push(w);
+                hooks.onWord?.(w);
               }
             }
           } catch { /* ignore malformed metadata */ }
@@ -134,7 +72,10 @@ function edgeSynthOnce(text, settings, signal) {
         const headers = parseHeaders(headerText);
         if (headers.Path === 'audio' && headers['Content-Type'] === 'audio/mpeg') {
           const audio = ev.data.slice(2 + headerLen);
-          if (audio.byteLength) chunks.push(audio);
+          if (audio.byteLength) {
+            chunks.push(audio);
+            hooks.onAudio?.(audio); // lets the player start before the whole sentence arrives
+          }
         }
       }
     };
@@ -145,18 +86,18 @@ function edgeSynthOnce(text, settings, signal) {
   });
 }
 
-async function edgeSynth(text, settings, signal) {
+async function edgeSynth(text, settings, signal, hooks) {
   try {
-    return await edgeSynthOnce(text, settings, signal);
+    return await edgeSynthOnce(text, settings, signal, hooks);
   } catch (err) {
     if (err.name === 'AbortError' || err.opened) throw err;
     // Handshake rejected: most often a clock-skew problem with the token. Sync and retry once.
     await syncClockWithServer();
-    return edgeSynthOnce(text, settings, signal);
+    return edgeSynthOnce(text, settings, signal, hooks);
   }
 }
 
-async function azureSynth(text, settings, signal) {
+async function azureSynth(text, settings, signal, hooks = {}) {
   if (!settings.azureKey) throw new Error('Azure backend selected but no Azure key set (open the extension popup)');
   const region = settings.azureRegion || 'eastus';
   const res = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
@@ -170,13 +111,22 @@ async function azureSynth(text, settings, signal) {
     body: buildSsml(text, settings.voice, localeOf(settings.voice), settings),
   });
   if (!res.ok) throw new Error(`Azure TTS error ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  return { audio: await res.blob(), words: [] }; // REST API gives no word timings
+  const chunks = [];
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    hooks.onAudio?.(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  }
+  return { audio: new Blob(chunks, { type: 'audio/mpeg' }), words: [] }; // REST API gives no word timings
 }
 
-export function synthesize(text, settings, signal) {
+// hooks: { onAudio(ArrayBuffer), onWord({offset, duration, text}) } fire while audio streams in.
+export function synthesize(text, settings, signal, hooks) {
   return settings.backend === 'azure'
-    ? azureSynth(text, settings, signal)
-    : edgeSynth(text, settings, signal);
+    ? azureSynth(text, settings, signal, hooks)
+    : edgeSynth(text, settings, signal, hooks);
 }
 
 // Returns [{ shortName, label, locale, gender }]

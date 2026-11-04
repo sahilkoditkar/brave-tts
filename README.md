@@ -1,4 +1,4 @@
-# browser-read-aloud
+# Read Aloud (personal)
 
 > **Personal project — not for use or distribution.**
 > I built this for myself and published it only to show how it works. It isn't supported and isn't
@@ -10,22 +10,29 @@
 
 I moved from Edge to Brave for everything else, but I missed one Edge feature: **Read Aloud**. Its
 natural neural voices are far better than the robotic system voices other browsers use. Switching
-browsers for one feature didn't make sense, so I rebuilt the feature as a small Brave/Chromium
-extension.
+browsers for one feature didn't make sense, so I rebuilt the feature as a small extension. Then I
+brought the same voices into VS Code for reading docs.
 
-## What it does
+| Folder | What it is |
+|---|---|
+| [`browser/`](browser) | Brave/Chromium extension: reads web pages with sentence and word highlighting |
+| [`vscode/`](vscode) | VS Code extension: reads Markdown/docs, only the comments in code, and Claude Code replies |
 
-- Reads the current page (main article content, skipping nav, sidebars, footers, and hidden text),
-  or just the selected text
+Both share one voice engine (`browser/lib`): the request token, the voice list, and the SSML
+protocol.
+
+## Browser extension
+
+- Reads the main article on a page (skipping nav, sidebars, footers and hidden text), or just the
+  selected text
 - Highlights the sentence being read, and the current **word** in real time
-- Floating player bar: play/pause, previous/next sentence, voice picker, speed control
-- "Read from here": click in the text, then press the shortcut (Ctrl+Shift+U). Alt+click any
-  sentence while reading to jump to it
+- Floating player bar: play/pause, previous/next sentence, voice picker, speed
+- **Right-click → "Read aloud from here"** starts at that word and reads on through the page
+- **Ctrl+Shift+U** (⇧⌘U on Mac) to start, pause or resume. Alt/Option+click a sentence while
+  reading to jump to it
 - Popup with language and voice picker, voice preview, speed, pitch, and highlight/scroll options
 
 ![Player bar](docs/player.png)
-
-## How it works
 
 ```
 page (content.js)            background.js               offscreen.html (offscreen.js)
@@ -35,45 +42,88 @@ CSS Custom Highlight API ◀── relays player events  ◀──  plays audio,
 floating player (shadow DOM) context menu, shortcut      reports sentence/word progress
 ```
 
-A few problems were more interesting than they first looked:
+## VS Code extension
 
-- **Speaking like Edge.** The voice service expects Edge's own client. The extension uses
-  `declarativeNetRequest` to set the WebSocket handshake headers (Origin, User-Agent) that browser
-  JavaScript isn't normally allowed to set. It also generates the time-based request token the
-  service requires (`lib/drm.js`). That's a port of the open-source
-  [edge-tts](https://github.com/rany2/edge-tts) project's implementation, checked against its output
-  (`tests/token.test.mjs`).
-- **Mapping audio back to the page.** Text is pulled from DOM text nodes into a flat string, with a
-  1:1 offset map back to the nodes. Sentences come from `Intl.Segmenter`, with a fix-up so "Dr." or
-  "J." don't end a sentence. Word-boundary events from the service become character offsets, then DOM
-  `Range`s, highlighted with the CSS Custom Highlight API. The page's DOM is never modified.
-- **Working on any site.** Styles are injected through extension APIs and constructable stylesheets
-  (no inline styles), and UI is built with DOM APIs (no `innerHTML`). That keeps it working on pages
-  with strict Content-Security-Policy or Trusted Types.
-- **Manifest V3 lifetimes.** Audio lives in an offscreen document, which Chrome closes when idle. The
-  page keeps the reading position, so resume rebuilds the player if it was closed.
-- **Testable without the real service.** `tests/e2e` runs a fake speech server locally (TLS +
-  hand-rolled WebSocket framing). Chromium is pointed at it with `--host-resolver-rules`, so the
-  whole pipeline gets exercised end to end: header rewriting, token, protocol, playback,
-  highlighting, selection mode, speed changes, and jumping.
+- **Markdown / plain text:** reads the prose. It skips syntax, URLs, images, HTML and fenced code.
+- **Code:** reads **only comments and docstrings**, and skips lines that look like commented-out
+  code.
+- **Claude Code replies:** reads the latest reply (⌘⌥U), reads from a word you select in the
+  Claude panel (⌘⌥R), or auto-reads each reply when it finishes. Tool calls, thinking and code are
+  skipped. Replies come from Claude Code's local session files (read-only), since its chat panel
+  can't be read by other extensions.
+- Right-click → **Read Aloud from Here** (or **Read Aloud Selection**), ⌘⌥R to start or pause,
+  and the sentence and word are highlighted in the editor.
+- No npm dependencies at all. It uses a hand-written WebSocket client on Node's `https`, the OS
+  audio player (`afplay` on macOS), and a dependency-free `.vsix` packer.
+
+## Interesting problems
+
+- **Speaking like Edge.** The voice service expects Edge's own client. In the browser,
+  `declarativeNetRequest` sets the WebSocket handshake headers (Origin, User-Agent) that browser
+  JavaScript isn't normally allowed to set. In VS Code, the hand-rolled WebSocket client sets them
+  directly. Both generate the time-based request token the service requires (`browser/lib/drm.js`).
+  That's a port of the open-source [edge-tts](https://github.com/rany2/edge-tts) project's
+  implementation, checked against its output.
+- **Mapping audio back to text.** In the browser, text from DOM text nodes goes into a flat string
+  with a 1:1 offset map back to the nodes. In VS Code, the document becomes "spoken text" of the
+  *same length*, with skipped syntax and code blanked out, so offsets map straight back to editor
+  ranges. Word-boundary events from the service become ranges, highlighted live.
+- **Working on any site.** Styles come from extension APIs and constructable stylesheets (no inline
+  styles), and UI is built with DOM APIs (no `innerHTML`). That keeps it working on pages with strict
+  Content-Security-Policy or Trusted Types.
+- **Fast start.** The browser streams audio into a `MediaSource` as it arrives, so speech starts
+  with the first chunk rather than after the whole sentence. The audio player is also warmed up while
+  the page script loads. In VS Code, where the OS player needs whole files, a long first sentence is
+  split at a natural pause.
+- **Testable without the real service.** A local fake speech server (TLS + hand-rolled WebSocket
+  framing) runs end-to-end tests for both extensions. That covers header rewriting, the token, the
+  protocol, playback, highlighting, selection, speed changes, and jumping.
+
+## Security & privacy
+
+Extensions are a common attack route, so this one is kept deliberately small:
+
+- **Minimal browser permissions.** It uses `activeTab`, so it can only touch the tab you invoke it
+  on, at that moment. There's no "read all sites" access and no always-on script; "Read aloud from
+  here" uses the word your right-click selects. Network access is limited to the voice service's
+  domains.
+- **No remote code, no tracking.** All code ships in the folder: no `eval`, no external scripts, no
+  analytics.
+- **Web pages can't control it.** There's no `externally_connectable`. Page text is XML-escaped
+  before going into SSML, and the player UI never uses `innerHTML`.
+- **No silent updates.** It's loaded from a local folder, not a store, so nobody can push an update
+  to it. Updating means reviewing and pulling a change yourself.
+- **No dependencies.** The extensions have no npm packages, so there's no supply chain to compromise.
+  (Tests use Playwright, which is dev-only.)
+- **What leaves your machine:** the text being read goes to Microsoft's speech service, the same as
+  Edge's Read Aloud. That includes Claude Code replies when you read them aloud, so don't use it on
+  confidential content. Claude Code session files are only read locally, never uploaded or
+  modified. An Azure key (optional) stays in the
+  browser's local extension storage, or in VS Code's encrypted secret storage.
 
 ## When it breaks
 
 The free endpoint is unofficial, so expect breakage. The usual fix is to bump the version constants
-in `lib/constants.js` and/or port the latest token change into `lib/drm.js` from a newer edge-tts
-release.
+in `browser/lib/constants.js` and/or port the latest token change into `browser/lib/drm.js` from a
+newer edge-tts release. That fixes both extensions.
 
-There's also an official fallback built in: popup → **Voice source** → *My Azure Speech key*. Azure
-Speech has a free tier with the same neural voices. Word highlighting isn't available there, because
-the REST API doesn't return word timings.
+There's an official fallback built into both: switch the voice source to *Azure Speech key*. Azure
+Speech has a free tier with the same neural voices. Word highlighting isn't available there.
 
 ## Running it locally (for myself)
 
-1. `brave://extensions` → enable **Developer mode** → **Load unpacked** → select this folder.
-2. Open an article and press **Ctrl+Shift+U** (change it at `brave://extensions/shortcuts`), or use
-   the toolbar popup, or right-click → *Read aloud this page / selection*.
+**Browser:** `brave://extensions` → **Developer mode** → **Load unpacked** → select the `browser`
+folder. It can't run on `brave://` pages, the extension store, or the built-in PDF viewer.
 
-It can't run on browser pages (`brave://…`), the extension store, or the built-in PDF viewer.
+**VS Code:** `node vscode/scripts/pack-vsix.mjs`, then in VS Code go to **Extensions** → **⋯** →
+**Install from VSIX…** → `vscode/dist/read-aloud-<version>.vsix`.
 
-Tests: `node tests/token.test.mjs` and `node tests/e2e/run.js` (needs Playwright, openssl, ffmpeg,
-and port 443).
+**Tests:**
+
+```bash
+node browser/tests/token.test.mjs
+node vscode/tests/text.test.mjs
+node vscode/tests/claude.test.mjs
+node browser/tests/e2e/run.js         # needs Playwright, openssl, ffmpeg, port 443
+node vscode/tests/extension.test.cjs  # needs openssl, ffmpeg, port 443
+```

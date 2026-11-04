@@ -1,0 +1,220 @@
+{
+  "name": "read-aloud",
+  "displayName": "Read Aloud (personal)",
+  "description": "Reads Markdown, docs, code comments and Claude Code replies aloud with natural neural voices. Personal use.",
+  "version": "0.1.0",
+  "publisher": "sahilkoditkar",
+  "private": true,
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sahilkoditkar/browser-read-aloud"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "readAloud.readFromHere",
+        "title": "Read Aloud from Here",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.readSelection",
+        "title": "Read Aloud Selection",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.toggle",
+        "title": "Start / Pause",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.stop",
+        "title": "Stop",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.next",
+        "title": "Next Sentence",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.previous",
+        "title": "Previous Sentence",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.chooseVoice",
+        "title": "Choose Voice",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.setSpeed",
+        "title": "Set Speed",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.setAzureKey",
+        "title": "Set Azure Speech Key",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.readLastClaudeReply",
+        "title": "Read Last Claude Code Reply",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.toggleAutoReadClaude",
+        "title": "Toggle Auto-Read Claude Code Replies",
+        "category": "Read Aloud"
+      },
+      {
+        "command": "readAloud.readPanelSelection",
+        "title": "Read Selected Text in Panel (e.g. Claude Code)",
+        "category": "Read Aloud"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "readAloud.readFromHere",
+          "when": "!editorHasSelection",
+          "group": "z_readaloud@1"
+        },
+        {
+          "command": "readAloud.readSelection",
+          "when": "editorHasSelection",
+          "group": "z_readaloud@1"
+        },
+        {
+          "command": "readAloud.stop",
+          "when": "readAloud.active",
+          "group": "z_readaloud@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "readAloud.next",
+          "when": "readAloud.active"
+        },
+        {
+          "command": "readAloud.previous",
+          "when": "readAloud.active"
+        },
+        {
+          "command": "readAloud.stop",
+          "when": "readAloud.active"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "readAloud.toggle",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorTextFocus || readAloud.active"
+      },
+      {
+        "command": "readAloud.readPanelSelection",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "!editorTextFocus && !readAloud.active && !filesExplorerFocus"
+      },
+      {
+        "command": "readAloud.next",
+        "key": "ctrl+alt+right",
+        "when": "readAloud.active"
+      },
+      {
+        "command": "readAloud.previous",
+        "key": "ctrl+alt+left",
+        "when": "readAloud.active"
+      },
+      {
+        "command": "readAloud.readLastClaudeReply",
+        "key": "ctrl+alt+u",
+        "mac": "cmd+alt+u"
+      }
+    ],
+    "configuration": {
+      "title": "Read Aloud",
+      "properties": {
+        "readAloud.voice": {
+          "type": "string",
+          "default": "en-US-AvaMultilingualNeural",
+          "description": "Voice short name. Use \"Read Aloud: Choose Voice\" to pick from the list."
+        },
+        "readAloud.speed": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.5,
+          "maximum": 3,
+          "description": "Reading speed (1 = normal)."
+        },
+        "readAloud.pitch": {
+          "type": "number",
+          "default": 0,
+          "minimum": -50,
+          "maximum": 50,
+          "description": "Pitch adjustment in Hz."
+        },
+        "readAloud.highlightWords": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight each word as it is spoken."
+        },
+        "readAloud.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the Read Aloud button in the status bar."
+        },
+        "readAloud.voiceSource": {
+          "type": "string",
+          "enum": [
+            "edge",
+            "azure"
+          ],
+          "enumDescriptions": [
+            "Edge Read Aloud service (free, unofficial)",
+            "Your own Azure Speech key (official, free tier)"
+          ],
+          "default": "edge",
+          "description": "Where voices come from."
+        },
+        "readAloud.azureRegion": {
+          "type": "string",
+          "default": "eastus",
+          "description": "Azure Speech region (only for the Azure voice source)."
+        },
+        "readAloud.claude.autoRead": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically read each Claude Code reply aloud when it finishes."
+        },
+        "readAloud.claude.includeProgressUpdates": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also read the short updates Claude writes between tool calls (by default only the final message is read)."
+        },
+        "readAloud.claude.projectsDir": {
+          "type": "string",
+          "default": "",
+          "description": "Where Claude Code stores session transcripts. Empty = ~/.claude/projects (or $CLAUDE_CONFIG_DIR/projects)."
+        }
+      }
+    }
+  }
+}
