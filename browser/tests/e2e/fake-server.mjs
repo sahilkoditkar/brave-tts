@@ -64,6 +64,9 @@ server.on('upgrade', (req, socket) => {
   const accepted = () => socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
   if (HANDSHAKE_DELAY) setTimeout(accepted, HANDSHAKE_DELAY); else accepted();
   let pending = Buffer.alloc(0);
+  // After closeAfterTurn ends the socket, other requests in flight on it get no reply (writing to an
+  // ended socket would destroy it and lose the reply that was just sent).
+  const write = (b) => { if (!socket.writableEnded) socket.write(b); };
   socket.on('data', (d) => {
     pending = parseFrames(Buffer.concat([pending, d]), (op, payload) => {
       if (op === 8) { socket.end(frame(8, Buffer.alloc(0))); return; }
@@ -76,10 +79,10 @@ server.on('upgrade', (req, socket) => {
       if (mode.stallNext) { mode.stallNext = false; log({ type: 'stalled', text: spoken }); return; } // never answer
       const rid = /X-RequestId:(\w+)/.exec(text)[1];
       const hdr = (p) => `X-RequestId:${rid}\r\nContent-Type:application/json; charset=utf-8\r\nPath:${p}\r\n\r\n`;
-      socket.write(frame(1, Buffer.from(hdr('turn.start') + '{}')));
+      write(frame(1, Buffer.from(hdr('turn.start') + '{}')));
       const words = spoken.split(/\s+/).map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')).filter(Boolean);
       const meta = { Metadata: words.map((w, k) => ({ Type: 'WordBoundary', Data: { Offset: 500000 + k * (11000000 / Math.max(words.length, 1)), Duration: 1000000, text: { Text: w, Length: w.length, BoundaryType: 'WordBoundary' } } })) };
-      socket.write(frame(1, Buffer.from(hdr('audio.metadata') + JSON.stringify(meta))));
+      write(frame(1, Buffer.from(hdr('audio.metadata') + JSON.stringify(meta))));
       const audioHdr = Buffer.from(`X-RequestId:${rid}\r\nContent-Type:audio/mpeg\r\nX-StreamId:1\r\nPath:audio\r\n`);
       // FAKE_CHUNK_DELAY_MS simulates the real service streaming audio as it synthesizes.
       const delay = Number(process.env.FAKE_CHUNK_DELAY_MS || 0);
@@ -91,13 +94,13 @@ server.on('upgrade', (req, socket) => {
         if (FIRST_AUDIO_DELAY) await new Promise((r) => setTimeout(r, FIRST_AUDIO_DELAY));
         for (const part of parts) {
           const len = Buffer.alloc(2); len.writeUInt16BE(audioHdr.length);
-          socket.write(frame(2, Buffer.concat([len, audioHdr, part])));
+          write(frame(2, Buffer.concat([len, audioHdr, part])));
           if (delay) await new Promise((r) => setTimeout(r, delay));
         }
         const len2 = Buffer.alloc(2); len2.writeUInt16BE(endHdr.length);
-        socket.write(frame(2, Buffer.concat([len2, endHdr])));
-        socket.write(frame(1, Buffer.from(hdr('turn.end') + '{}')));
-        if (mode.closeAfterTurn) socket.end(frame(8, Buffer.alloc(0)));
+        write(frame(2, Buffer.concat([len2, endHdr])));
+        write(frame(1, Buffer.from(hdr('turn.end') + '{}')));
+        if (mode.closeAfterTurn && !socket.writableEnded) socket.end(frame(8, Buffer.alloc(0)));
       };
       sendAll();
     });

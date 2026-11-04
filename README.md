@@ -74,25 +74,33 @@ floating player (shadow DOM) context menu, shortcut      reports sentence/word p
 - **Working on any site.** Styles come from extension APIs and constructable stylesheets (no inline
   styles), and UI is built with DOM APIs (no `innerHTML`). That keeps it working on pages with strict
   Content-Security-Policy or Trusted Types.
-- **No stalls between sentences.** Both extensions keep **one** connection open and request
-  sentences one at a time over it, the way Edge does, while the current one plays. A stalled
-  request is abandoned after 5 s and retried on a fresh connection. (Opening a connection per
-  sentence, several at once, made the service stall.) This logic is written once, in
+- **No stalls between sentences.** Both extensions keep **one** connection open, the way Edge
+  does, and send the current sentence and the next two on it at once: the service works on them in
+  parallel (tagged by request id). Measured against the real service, some voices (including the
+  default, Ava Multilingual) take 3–13 s to start a new sentence, about as long as a sentence takes
+  to play, so asking one at a time left long gaps. More than ~3 at once, or bursts of new
+  connections, can make the service stop answering for a while. This logic is written once, in
   `shared/edge-client.js`; each extension only supplies its WebSocket.
+- **Slow isn't stalled.** The service acknowledges a request within ~100 ms, so no reply at all
+  within 5 s means a dead connection: the request is retried on a new one. Once acknowledged, it
+  waits up to 20 s for audio (the old single 5 s limit failed 4–8 of every 12 sentences with the
+  default voice, and the retry made each of them take twice as long).
 - **No handshake wait on the next read.** The connection is opened while the text is still being
   extracted, and stays open for 30 s after reading stops. Stopping, skipping or changing speed
   lets the cancelled sentence finish arriving in the background instead of closing the connection.
   The browser also keeps the last 40 sentences it spoke, so going back or reading again is instant.
 - **Fast start.** The browser streams audio into a `MediaSource` as it arrives, so speech starts
   with the first chunk rather than after the whole sentence. The audio player is also warmed up while
-  the page script loads. In VS Code, where the OS player needs whole files, a long first sentence is
-  split at a natural pause.
+  the page script loads. A long sentence to start at is split at a natural pause, since the service
+  takes longer to start the longer the sentence (a 30-word opening: first sound 7.8 → 4.8 s).
 - **Long pages.** Text extraction builds one flat string from the page's text nodes. Testing the end
   of that string with a regex made V8 copy the whole string each time, so a long page took
   seconds; tracking the last character instead made it ~20× faster.
 - **Testable without the real service.** A local fake speech server (TLS + hand-rolled WebSocket
   framing) runs end-to-end tests for both extensions. That covers header rewriting, the token, the
-  protocol, playback, highlighting, selection, speed changes, and jumping.
+  protocol, playback, highlighting, selection, speed changes, and jumping. Separate live tests and
+  a live benchmark run the same code against the real service (see below); they use new random
+  text each run, because the service caches audio for text it has seen (a repeat takes ~150 ms).
 
 ## Security & privacy
 
@@ -160,3 +168,16 @@ node vscode/tests/extension.test.cjs   # needs openssl, ffmpeg, port 443
 node browser/tests/e2e/bench.js   # first word, gaps, a 1.5 MB page
 node vscode/tests/bench.mjs       # Claude Code transcripts, long Markdown
 ```
+
+**Against the real service** (these send text to Microsoft, so CI doesn't run them; they use
+`HTTPS_PROXY` if set):
+
+```bash
+node vscode/tests/live.test.mjs                  # voices, token + clock fix, escaping, languages, speed, long text, cancel
+node browser/tests/e2e/live.js                   # the built extension in Chromium: reads a page, highlights words
+node vscode/tests/live-bench.mjs --mode stream   # first sound, silences, failures while reading an article (browser)
+node vscode/tests/live-bench.mjs --mode file     # the same, playing whole files (VS Code)
+```
+
+Each takes `--root <checkout>` to measure another version (e.g. a `git worktree` of an older
+commit) the same way, and the benchmarks take `--voice`, `--runs` and `--json`.

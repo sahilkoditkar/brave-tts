@@ -98,5 +98,12 @@ const qs = quickStart(sentencesInRange(spokenText(longText, 'plaintext'), 0));
 assert.equal(qs.length, 3);
 assert.ok(qs[0].text.length <= 120 && qs[0].text.endsWith(','));
 for (const q of qs) assert.equal(longText.slice(q.start, q.start + q.text.length), q.text);
+// ...or the sentence reading starts at (browser: "read from here", caret), leaving the others alone
+const two = sentencesInRange(spokenText(`Short one. ${longText}`, 'plaintext'), 0);
+const qs2 = quickStart(two, 120, 1);
+assert.equal(qs2.length, 4);
+assert.equal(qs2[0], two[0]);
+assert.ok(qs2[1].text.endsWith(',') && qs2[2].text.startsWith('which'));
+assert.equal(quickStart(two, 120, 5), two, 'no such sentence: unchanged');
 
 console.log('✓ text extraction tests passed');
