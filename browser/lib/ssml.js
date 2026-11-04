@@ -67,9 +67,9 @@ export function speechConfigMessage() {
     `"outputFormat":"${OUTPUT_FORMAT}"}}}}\r\n`;
 }
 
-export function ssmlMessage(text, settings) {
+export function ssmlMessage(text, settings, requestId = uuid()) {
   const ssml = buildSsml(text, edgeLongVoiceName(settings.voice), localeOf(settings.voice), settings);
-  return `X-RequestId:${uuid()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${dateString()}Z\r\nPath:ssml\r\n\r\n${ssml}`;
+  return `X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${dateString()}Z\r\nPath:ssml\r\n\r\n${ssml}`;
 }
 
 // Map word-boundary metadata (text + audio offset) to character offsets in the sentence.
@@ -86,4 +86,13 @@ export function mapWords(text, words) {
     cursor = at + w.text.length;
   }
   return out;
+}
+
+// Timeouts for the Edge connection: fail fast and retry instead of hanging.
+export const CONNECT_TIMEOUT_MS = 6000; // WebSocket handshake
+export const IDLE_TIMEOUT_MS = 5000; // no message from the service for this long mid-turn
+
+// The request a protocol message belongs to (several sentences share one connection).
+export function requestIdOf(headers) {
+  return (headers['X-RequestId'] || '').trim();
 }

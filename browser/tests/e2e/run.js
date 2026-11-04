@@ -70,7 +70,32 @@ function setup() {
     assert.match(ws.ua, /Edg\//, 'User-Agent rewritten by DNR');
     assert.match(ws.cookie, /^muid=[0-9A-F]{32};$/);
     assert.ok(readLog().filter((e) => e.type === 'ws').every((e) => e.gecValid), 'Sec-MS-GEC token valid');
-    console.log('✓ page mode, headers, token');
+    const connections = readLog().filter((e) => e.type === 'ws').length;
+    assert.ok(connections <= 2, `8 sentences should share one connection (opened ${connections})`);
+    console.log(`✓ page mode, headers, token; ${connections} connection(s) for 8 sentences`);
+
+    // Service drops the connection after every sentence -> reconnects transparently
+    const setMode = (q) => page.evaluate((u) => fetch(u).then((r) => r.json()), `http://127.0.0.1:8080/__mode?${q}`);
+    fs.writeFileSync(LOG, '');
+    await setMode('closeAfterTurn=1');
+    await send({ to: 'bg', type: 'start', tabId, mode: 'page' });
+    await playerGone();
+    assert.equal(new Set(ssmlTexts()).size, 8, 'every sentence still read');
+    console.log('✓ reconnects when the service closes the connection after each sentence');
+
+    // Service stalls on a request -> gives up within seconds and retries on a fresh connection
+    fs.writeFileSync(LOG, '');
+    await setMode('stallNext=1');
+    const tStall = Date.now();
+    await send({ to: 'bg', type: 'start', tabId, mode: 'page' });
+    await page.waitForFunction(() => CSS.highlights.get('read-aloud-word')?.size > 0, null, { timeout: 15000 });
+    const recoverMs = Date.now() - tStall;
+    assert.ok(readLog().some((e) => e.type === 'stalled'), 'a request was stalled');
+    assert.ok(recoverMs < 11000, `recovered from a stalled request in ${recoverMs} ms`);
+    await send({ to: 'bg', type: 'stopAll' });
+    await playerGone();
+    await setMode('');
+    console.log(`✓ stalled request recovered in ${(recoverMs / 1000).toFixed(1)} s (was up to 20 s + skip)`);
 
     // Speed change mid-read + Alt+click jump
     fs.writeFileSync(LOG, '');

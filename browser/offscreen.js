@@ -2,9 +2,9 @@
 // Content script (in the page) is the controller: it sends the list of sentences
 // and commands; we report back which sentence/word is being spoken.
 
-import { synthesize } from './lib/tts.js';
+import { synthesize, closeConnection } from './lib/tts.js';
 
-const PREFETCH_AHEAD = 3;
+const PREFETCH_AHEAD = 2; // fetched one at a time over a single connection, while the current sentence plays
 const audio = new Audio();
 // Stream audio into the player while it's still being synthesized (much faster start).
 const CAN_STREAM = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
@@ -209,6 +209,7 @@ function stop(notify = true) {
   audio.pause();
   audio.removeAttribute('src');
   dropCache(() => true);
+  closeConnection();
   if (notify) emit('stopped');
   texts = [];
   tabId = null;

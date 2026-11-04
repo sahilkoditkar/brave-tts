@@ -8,6 +8,8 @@ import { generateSecMsGec } from '../../../shared/drm.js';
 const dir = new URL('.', import.meta.url).pathname;
 const tmp = process.env.E2E_TMP;
 const log = (o) => fs.appendFileSync(tmp + '/server.log', JSON.stringify(o) + '\n');
+// Failure modes tests can switch on at runtime: GET http://127.0.0.1:8080/__mode?closeAfterTurn=1&stallNext=1
+const mode = { closeAfterTurn: false, stallNext: false };
 const mp3 = fs.readFileSync(tmp + '/tone.mp3');
 
 const VOICES = [
@@ -67,6 +69,7 @@ server.on('upgrade', (req, socket) => {
       const m = /<voice name='([^']+)'><prosody pitch='([^']+)' rate='([^']+)'[^>]*>([\s\S]*)<\/prosody>/.exec(text);
       const spoken = m[4].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
       log({ type: 'ssml', voice: m[1], pitch: m[2], rate: m[3], text: spoken });
+      if (mode.stallNext) { mode.stallNext = false; log({ type: 'stalled', text: spoken }); return; } // never answer
       const rid = /X-RequestId:(\w+)/.exec(text)[1];
       const hdr = (p) => `X-RequestId:${rid}\r\nContent-Type:application/json; charset=utf-8\r\nPath:${p}\r\n\r\n`;
       socket.write(frame(1, Buffer.from(hdr('turn.start') + '{}')));
@@ -89,6 +92,7 @@ server.on('upgrade', (req, socket) => {
         const len2 = Buffer.alloc(2); len2.writeUInt16BE(endHdr.length);
         socket.write(frame(2, Buffer.concat([len2, endHdr])));
         socket.write(frame(1, Buffer.from(hdr('turn.end') + '{}')));
+        if (mode.closeAfterTurn) socket.end(frame(8, Buffer.alloc(0)));
       };
       sendAll();
     });
@@ -99,6 +103,14 @@ server.listen(443, '127.0.0.1');
 
 // Test article page
 http.createServer((req, res) => {
+  if (req.url.startsWith('/__mode')) {
+    const q = new URL(req.url, 'http://x').searchParams;
+    mode.closeAfterTurn = q.get('closeAfterTurn') === '1';
+    mode.stallNext = q.get('stallNext') === '1';
+    res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+    res.end(JSON.stringify(mode));
+    return;
+  }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'self'; style-src 'self'" });
   res.end(fs.readFileSync(dir + 'article.html'));
 }).listen(8080, '127.0.0.1');

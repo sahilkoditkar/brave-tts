@@ -74,6 +74,10 @@ floating player (shadow DOM) context menu, shortcut      reports sentence/word p
 - **Working on any site.** Styles come from extension APIs and constructable stylesheets (no inline
   styles), and UI is built with DOM APIs (no `innerHTML`). That keeps it working on pages with strict
   Content-Security-Policy or Trusted Types.
+- **No stalls between sentences.** Both extensions keep **one** connection open and request
+  sentences one at a time over it, the way Edge does, while the current one plays. A stalled
+  request is abandoned after 5 s and retried on a fresh connection. (Opening a connection per
+  sentence, several at once, made the service stall.)
 - **Fast start.** The browser streams audio into a `MediaSource` as it arrives, so speech starts
   with the first chunk rather than after the whole sentence. The audio player is also warmed up while
   the page script loads. In VS Code, where the OS player needs whole files, a long first sentence is

@@ -66,6 +66,16 @@ highlights never drift.
 > **Privacy:** reading a Claude reply sends that text to Microsoft's speech service. Don't use it on
 > confidential work output if your company doesn't allow that.
 
+## Troubleshooting
+
+- **"Timed out connecting" / "stopped responding":** run **Read Aloud: Test Connection** (also in
+  the menu). It checks name lookup, normal HTTPS, and the speech connection, then tells you which
+  step failed. The details go to **View → Output → Read Aloud**.
+- **Company network or proxy:** Brave uses the Mac's proxy automatically; VS Code may need it set.
+  Set VS Code's `http.proxy` setting (e.g. `http://proxy.company.com:8080`), or the `HTTPS_PROXY`
+  environment variable. If normal HTTPS works but speech doesn't, the network probably blocks
+  WebSockets. Use the Azure voice source, or another network.
+
 ## Install
 
 From the repo root:

@@ -2,6 +2,9 @@
 // Shares the token, constants and SSML/protocol helpers with the browser extension.
 
 import https from 'node:https';
+import http from 'node:http';
+import tls from 'node:tls';
+import dns from 'node:dns';
 import crypto from 'node:crypto';
 import {
   WSS_URL, VOICE_LIST_URL, SEC_MS_GEC_VERSION, OUTPUT_FORMAT,
@@ -10,6 +13,7 @@ import {
 import { generateSecMsGec, generateMuid, adjustClockSkew } from '../shared/drm.js';
 import {
   uuid, buildSsml, localeOf, parseHeaders, speechConfigMessage, ssmlMessage,
+  requestIdOf, CONNECT_TIMEOUT_MS, IDLE_TIMEOUT_MS,
 } from '../shared/ssml.js';
 
 const MUID = generateMuid();
@@ -24,6 +28,51 @@ const EDGE_HEADERS = {
 // Test hook only: lets the test suite point the engine at a local fake server.
 let transport = {};
 export function _setTransportForTests(options) { transport = options; }
+const timeouts = { connect: CONNECT_TIMEOUT_MS, idle: IDLE_TIMEOUT_MS };
+export function _setTimeoutsForTests(t) { Object.assign(timeouts, t); }
+
+// ---------------------------------------------------------------- proxy (explicit http.proxy / HTTPS_PROXY)
+let proxyUrl = '';
+export function setProxy(url) { proxyUrl = url || ''; }
+
+function tunnel(host, port) {
+  return new Promise((resolve, reject) => {
+    const p = new URL(proxyUrl);
+    const headers = { Host: `${host}:${port}` };
+    if (p.username) {
+      headers['Proxy-Authorization'] = `Basic ${Buffer.from(`${decodeURIComponent(p.username)}:${decodeURIComponent(p.password)}`).toString('base64')}`;
+    }
+    const req = (p.protocol === 'https:' ? https : http).request({
+      host: p.hostname, port: p.port || (p.protocol === 'https:' ? 443 : 80), method: 'CONNECT', path: `${host}:${port}`, headers,
+    });
+    req.setTimeout(timeouts.connect, () => req.destroy(new Error(`Timed out connecting through the proxy ${p.host}`)));
+    req.on('connect', (res, socket) => {
+      req.setTimeout(0);
+      if (res.statusCode !== 200) { socket.destroy(); reject(new Error(`Proxy ${p.host} refused the connection (HTTP ${res.statusCode})`)); return; }
+      resolve(socket);
+    });
+    req.on('error', (err) => reject(new Error(`Proxy ${p.host}: ${err.message}`)));
+    req.end();
+  });
+}
+
+// Tunnels each connection through the proxy (HTTP CONNECT), then does TLS to the real host.
+class TunnelAgent extends https.Agent {
+  createConnection(options, callback) {
+    const host = options.servername || options.host;
+    tunnel(host, options.port || 443).then((socket) => {
+      callback(null, tls.connect({
+        socket, servername: host, ...(transport.rejectUnauthorized === false ? { rejectUnauthorized: false } : {}),
+      }));
+    }, callback);
+  }
+}
+
+// Extra https.request options: tunnel through the proxy when one is configured.
+function viaProxy(host) {
+  if (!proxyUrl) return {};
+  return { agent: new TunnelAgent({ keepAlive: false }), servername: host };
+}
 
 // ---------------------------------------------------------------- minimal WebSocket client
 function wsConnect(url, headers) {
@@ -42,15 +91,21 @@ function wsConnect(url, headers) {
         'Sec-WebSocket-Version': '13',
       },
       ...transport,
+      ...viaProxy(u.hostname),
     });
-    req.setTimeout(15000, () => req.destroy(new Error('Connection to the Edge service timed out')));
+    const timer = setTimeout(() => req.destroy(Object.assign(new Error(
+      `Timed out connecting to the Edge service${proxyUrl ? ' (through the proxy)' : ''}. Run "Read Aloud: Test Connection" for details.`,
+    ), { handshake: true })), timeouts.connect);
+    req.on('close', () => clearTimeout(timer));
     req.on('response', (res) => {
       res.resume();
       reject(Object.assign(new Error(`Edge service refused the connection (HTTP ${res.statusCode})`),
-        { status: res.statusCode, date: res.headers.date }));
+        { status: res.statusCode, date: res.headers.date, handshake: true }));
     });
-    req.on('error', reject);
+    req.on('error', (err) => reject(Object.assign(err, { handshake: true })));
     req.on('upgrade', (res, socket, head) => {
+      clearTimeout(timer);
+      socket.setTimeout(0); // the connection is kept open between sentences
       const expected = crypto.createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
       if (res.headers['sec-websocket-accept'] !== expected) {
         socket.destroy();
@@ -130,74 +185,140 @@ class WsConnection {
 }
 
 // ---------------------------------------------------------------- Edge backend
-async function edgeSynthOnce(text, settings, signal) {
-  const url = `${WSS_URL}&ConnectionId=${uuid()}&Sec-MS-GEC=${generateSecMsGec()}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}`;
-  const ws = await wsConnect(url, { ...EDGE_HEADERS, Origin: EDGE_EXTENSION_ORIGIN });
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    const words = [];
-    let done = false;
-    const finish = (err) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      ws.close();
-      if (err) reject(err);
-      else if (!chunks.length) reject(new Error('No audio received from the Edge service'));
-      else resolve({ audio: Buffer.concat(chunks), words });
-    };
-    const onAbort = () => finish(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
-    if (signal?.aborted) { onAbort(); return; }
-    signal?.addEventListener('abort', onAbort);
-    const timer = setTimeout(() => finish(new Error('Edge service timed out')), 20000);
+// One connection reused for sentence after sentence (like Edge itself), requests one at a time.
+// Opening a new connection per sentence, several at once, makes the service stall.
+const abortError = () => Object.assign(new Error('Aborted'), { name: 'AbortError' });
 
-    ws.onmessage = (isBinary, data) => {
-      if (!isBinary) {
-        const s = data.toString('utf8');
-        const sep = s.indexOf('\r\n\r\n');
-        const headers = parseHeaders(s.slice(0, sep));
-        if (headers.Path === 'audio.metadata') {
-          try {
-            for (const m of JSON.parse(s.slice(sep + 4)).Metadata || []) {
-              if (m.Type === 'WordBoundary') words.push({ offset: m.Data.Offset, duration: m.Data.Duration, text: m.Data.text.Text });
-            }
-          } catch { /* ignore */ }
-        } else if (headers.Path === 'turn.end') {
-          finish();
-        }
-      } else if (data.length >= 2) {
-        const hl = data.readUInt16BE(0);
-        const headers = parseHeaders(data.subarray(2, 2 + hl).toString('utf8'));
-        if (headers.Path === 'audio' && headers['Content-Type'] === 'audio/mpeg') {
-          const audio = data.subarray(2 + hl);
-          if (audio.length) chunks.push(Buffer.from(audio));
-        }
-      }
-    };
-    ws.onclose = () => finish(chunks.length ? undefined : new Error('Edge service closed the connection'));
-    ws.send(speechConfigMessage());
-    ws.send(ssmlMessage(text, settings));
-  });
-}
+class EdgeConnection {
+  constructor() {
+    this.ws = null;
+    this.ready = null;
+    this.turn = null;
+    this.chain = Promise.resolve();
+  }
 
-async function edgeSynth(text, settings, signal) {
-  try {
-    return await edgeSynthOnce(text, settings, signal);
-  } catch (err) {
-    if (err.status === 403 && err.date) {
-      adjustClockSkew(err.date); // token is time-based: fix clock skew and retry once
-      return edgeSynthOnce(text, settings, signal);
+  connect() {
+    if (this.ws?.closed) { this.ws = null; this.ready = null; }
+    if (this.ready) return this.ready;
+    const url = `${WSS_URL}&ConnectionId=${uuid()}&Sec-MS-GEC=${generateSecMsGec()}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}`;
+    this.ready = wsConnect(url, { ...EDGE_HEADERS, Origin: EDGE_EXTENSION_ORIGIN }).then((ws) => {
+      ws.onmessage = (isBinary, data) => this.onMessage(ws, isBinary, data);
+      ws.onclose = () => this.drop(ws, new Error('Edge service closed the connection'));
+      ws.send(speechConfigMessage());
+      this.ws = ws;
+      return ws;
+    }, (err) => {
+      this.ready = null;
+      throw err;
+    });
+    return this.ready;
+  }
+
+  drop(ws, err) {
+    if (!this.ws || this.ws === ws) { this.ws = null; this.ready = null; }
+    ws.close();
+    const t = this.turn;
+    if (t && t.ws === ws) t.finish(err);
+  }
+
+  close() {
+    if (this.ws) this.drop(this.ws, abortError());
+  }
+
+  onMessage(ws, isBinary, data) {
+    const t = this.turn;
+    if (!t || t.ws !== ws) return;
+    let headers;
+    let body;
+    if (!isBinary) {
+      const str = data.toString('utf8');
+      const sep = str.indexOf('\r\n\r\n');
+      headers = parseHeaders(str.slice(0, sep));
+      body = str.slice(sep + 4);
+    } else {
+      if (data.length < 2) return;
+      const hl = data.readUInt16BE(0);
+      headers = parseHeaders(data.subarray(2, 2 + hl).toString('utf8'));
+      body = data.subarray(2 + hl);
     }
-    throw err;
+    const rid = requestIdOf(headers);
+    if (rid && rid.toLowerCase() !== t.requestId) return; // left over from an earlier request
+    t.arm();
+    if (headers.Path === 'audio') {
+      if (headers['Content-Type'] === 'audio/mpeg' && body.length) t.chunks.push(Buffer.from(body));
+    } else if (headers.Path === 'audio.metadata') {
+      try {
+        for (const m of JSON.parse(body).Metadata || []) {
+          if (m.Type === 'WordBoundary') t.words.push({ offset: m.Data.Offset, duration: m.Data.Duration, text: m.Data.text.Text });
+        }
+      } catch { /* ignore */ }
+    } else if (headers.Path === 'turn.end') {
+      t.finish();
+    }
+  }
+
+  runTurn(ws, text, settings, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) { reject(abortError()); return; }
+      const requestId = uuid();
+      let idle;
+      const onAbort = () => this.drop(ws, abortError()); // the next request reconnects
+      const turn = {
+        ws, requestId, chunks: [], words: [],
+        arm: () => {
+          clearTimeout(idle);
+          idle = setTimeout(() => this.drop(ws, new Error('The Edge service stopped responding')), timeouts.idle);
+        },
+        finish: (err) => {
+          clearTimeout(idle);
+          signal?.removeEventListener('abort', onAbort);
+          if (this.turn === turn) this.turn = null;
+          if (err) reject(err);
+          else if (!turn.chunks.length) reject(new Error('No audio received from the Edge service'));
+          else resolve({ audio: Buffer.concat(turn.chunks), words: turn.words });
+        },
+      };
+      signal?.addEventListener('abort', onAbort);
+      this.turn = turn;
+      turn.arm();
+      ws.send(ssmlMessage(text, settings, requestId));
+    });
+  }
+
+  async attempt(text, settings, signal) {
+    for (let i = 0; ; i++) {
+      if (signal?.aborted) throw abortError();
+      let ws;
+      try {
+        ws = await this.connect();
+      } catch (err) {
+        if (i >= 1) throw err;
+        if (err.status === 403 && err.date) adjustClockSkew(err.date); // token is time-based
+        continue;
+      }
+      try {
+        return await this.runTurn(ws, text, settings, signal);
+      } catch (err) {
+        if (err.name === 'AbortError' || i >= 1) throw err; // stalled/dropped: retry once, fresh connection
+      }
+    }
+  }
+
+  synth(text, settings, signal) {
+    const run = this.chain.then(() => this.attempt(text, settings, signal));
+    this.chain = run.catch(() => {});
+    return run;
   }
 }
+
+const edge = new EdgeConnection();
+export function closeConnection() { edge.close(); }
 
 // ---------------------------------------------------------------- HTTPS helper
 function request(url, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
-    const req = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method, headers, ...transport }, (res) => {
+    const req = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method, headers, ...transport, ...viaProxy(u.hostname) }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -228,7 +349,7 @@ async function azureSynth(text, settings) {
 
 // ---------------------------------------------------------------- public API
 export function synthesize(text, settings, signal) {
-  return settings.backend === 'azure' ? azureSynth(text, settings) : edgeSynth(text, settings, signal);
+  return settings.backend === 'azure' ? azureSynth(text, settings) : edge.synth(text, settings, signal);
 }
 
 export async function listVoices(settings) {
@@ -248,4 +369,38 @@ export async function listVoices(settings) {
     const name = v.ShortName.slice(v.Locale.length + 1).replace(/Neural$/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
     return { shortName: v.ShortName, label: `${name} (${v.Locale})`, locale: v.Locale, gender: v.Gender };
   });
+}
+
+// Step-by-step connection check for "Read Aloud: Test Connection".
+// -> [{ step, ok, ms, detail }]
+export async function diagnose(settings) {
+  const steps = [];
+  const run = async (step, fn) => {
+    const t0 = Date.now();
+    try {
+      const detail = await fn();
+      steps.push({ step, ok: true, ms: Date.now() - t0, detail });
+      return true;
+    } catch (err) {
+      steps.push({ step, ok: false, ms: Date.now() - t0, detail: err.message });
+      return false;
+    }
+  };
+  const host = new URL(VOICE_LIST_URL).hostname;
+  steps.push({ step: 'Proxy', ok: true, ms: 0, detail: proxyUrl ? new URL(proxyUrl).host : 'none configured (direct, or VS Code\'s system proxy support)' });
+  if (proxyUrl) {
+    steps.push({ step: `DNS lookup ${host}`, ok: true, ms: 0, detail: 'skipped: the proxy looks up names' });
+  } else {
+    await run(`DNS lookup ${host}`, () => new Promise((resolve, reject) => {
+      (transport.lookup || dns.lookup)(host, {}, (err, address) => (err ? reject(err) : resolve(address)));
+    }));
+  }
+  await run('Voice list (HTTPS)', async () => `${(await listVoices({ ...settings, backend: 'edge' })).length} voices`);
+  closeConnection();
+  await run('Speech (WebSocket)', async () => {
+    const t0 = Date.now();
+    const r = await edge.synth('Testing the connection.', { ...settings, backend: 'edge' });
+    return `${r.audio.length} bytes of audio in ${Date.now() - t0} ms`;
+  });
+  return steps;
 }

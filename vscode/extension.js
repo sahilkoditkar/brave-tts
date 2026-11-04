@@ -159,7 +159,10 @@ async function playFrom(i) {
     audio = await getAudio(session.idx);
   } catch (err) {
     if (myGen !== gen || err.name === 'AbortError') return;
-    vscode.window.showErrorMessage(`Read Aloud: ${err.message}`);
+    trace(`speech failed: ${err.message}`);
+    Promise.resolve(vscode.window.showErrorMessage(`Read Aloud: ${err.message}`, 'Test Connection')).then((b) => {
+      if (b) vscode.commands.executeCommand('readAloud.testConnection');
+    });
     stopReading();
     return;
   }
@@ -212,6 +215,7 @@ function stopReading() {
   gen++;
   stopAudio();
   if (session) dropCache(() => true);
+  mods?.engine.closeConnection();
   session = null;
   clearHighlights();
   updateStatus();
@@ -501,6 +505,36 @@ async function setSpeed() {
   if (pick) await vscode.workspace.getConfiguration('readAloud').update('speed', pick.value, vscode.ConfigurationTarget.Global);
 }
 
+function applyProxy() {
+  const proxy = vscode.workspace.getConfiguration('http').get('proxy')
+    || process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || '';
+  mods.engine.setProxy(proxy);
+  trace(`proxy: ${proxy ? proxy.replace(/\/\/[^@/]*@/, '//***@') : 'none'}`);
+}
+
+async function testConnection() {
+  await load();
+  applyProxy();
+  log.show(true);
+  trace('--- Test Connection ---');
+  const steps = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Read Aloud: testing the connection to the voice service…' },
+    async () => mods.engine.diagnose(await getSettings()),
+  );
+  for (const st of steps) trace(`${st.ok ? '✓' : '✗'} ${st.step} (${st.ms} ms): ${st.detail}`);
+  const failed = steps.find((st) => !st.ok);
+  if (!failed) {
+    vscode.window.showInformationMessage(`Read Aloud: connection OK — ${steps.at(-1).detail}.`);
+    return;
+  }
+  const hint = /DNS/.test(failed.step) ? 'This network can\'t resolve the voice service (offline, or blocked by DNS filtering).'
+    : /proxy/i.test(failed.detail) ? 'The proxy is refusing or timing out. Check VS Code\'s "http.proxy" setting.'
+      : /Speech/.test(failed.step) && steps.find((st) => st.step.startsWith('Voice list'))?.ok
+        ? 'Normal HTTPS works but the speech WebSocket doesn\'t: a company firewall/proxy may block WebSockets. If you use a proxy, set VS Code\'s "http.proxy". Otherwise switch the voice source to Azure, or use it off the company network.'
+        : 'The voice service isn\'t reachable from VS Code. If Brave works on this network, a proxy is probably needed: set VS Code\'s "http.proxy".';
+  vscode.window.showErrorMessage(`Read Aloud: ${failed.step} failed — ${failed.detail}. ${hint}`);
+}
+
 // One menu for everything (status bar button when idle).
 async function menu() {
   await load();
@@ -515,6 +549,7 @@ async function menu() {
     { label: '', kind: vscode.QuickPickItemKind?.Separator ?? -1 },
     { label: `$(dashboard) Speed: ${c.get('speed', 1)}×`, run: setSpeed },
     { label: `$(person) Voice: ${voice}`, run: chooseVoice },
+    { label: '$(pulse) Test connection to the voice service', run: testConnection },
     { label: '$(settings-gear) All Read Aloud settings', run: () => vscode.commands.executeCommand('workbench.action.openSettings', 'readAloud') },
   ];
   const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Read Aloud' });
@@ -572,6 +607,8 @@ function activate(context) {
   reg('readAloud.toggleAutoReadClaude', toggleAutoRead);
   reg('readAloud.readClaudeSession', pickSessionAndRead);
   reg('readAloud.menu', menu);
+  reg('readAloud.testConnection', testConnection);
+  load().then(applyProxy);
   reg('readAloud.faster', () => nudgeSpeed(0.1));
   reg('readAloud.slower', () => nudgeSpeed(-0.1));
   updateClaudeWatcher();
@@ -589,6 +626,7 @@ function activate(context) {
     vscode.workspace.onDidCloseTextDocument((d) => { if (session?.doc === d) stopReading(); }),
     vscode.window.onDidChangeVisibleTextEditors(() => { if (session) highlightSentence(); }),
     vscode.workspace.onDidChangeConfiguration(async (e) => {
+      if (e.affectsConfiguration('http.proxy')) { await load(); applyProxy(); }
       if (!e.affectsConfiguration('readAloud')) return;
       if (e.affectsConfiguration('readAloud.claude')) updateClaudeWatcher();
       if (e.affectsConfiguration('readAloud.showStatusBar')) {

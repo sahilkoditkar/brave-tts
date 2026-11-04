@@ -11,6 +11,7 @@ const assert = require('assert/strict');
 const ROOT = path.resolve(__dirname, '../..');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'read-aloud-vscode-test-'));
 process.env.SDL_AUDIODRIVER = 'dummy'; // ffplay without a sound card
+for (const k of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY']) delete process.env[k]; // tests talk to a local fake server
 
 // ---------------------------------------------------------------- vscode mock
 class Position { constructor(line, character) { this.line = line; this.character = character; } }
@@ -46,6 +47,7 @@ const statusItems = [];
 const vscodeMock = {
   Position, Range, Selection,
   StatusBarAlignment: { Left: 1, Right: 2 },
+  ProgressLocation: { Notification: 15 },
   TextEditorRevealType: { InCenterIfOutsideViewport: 2 },
   ConfigurationTarget: { Global: 1 },
   env: {
@@ -57,12 +59,13 @@ const vscodeMock = {
     get activeTextEditor() { return editor; },
     get visibleTextEditors() { return editor ? [editor] : []; },
     createTextEditorDecorationType: (opts) => ({ opts, dispose() {} }),
-    createOutputChannel: () => ({ appendLine: (l) => logLines.push(l), dispose() {} }),
+    createOutputChannel: () => ({ appendLine: (l) => logLines.push(l), show() {}, dispose() {} }),
     createStatusBarItem: () => { const s = { text: '', show() { this.visible = true; }, hide() { this.visible = false; }, dispose() {} }; statusItems.push(s); return s; },
     showInformationMessage: (m) => { messages.push(['info', m]); },
     showErrorMessage: (m) => { messages.push(['error', m]); },
     setStatusBarMessage: (m) => { messages.push(['status', m]); },
     showQuickPick: async (items) => items[0],
+    withProgress: async (_opts, fn) => fn({ report() {} }),
     onDidChangeVisibleTextEditors: mkEvent('visible'),
   },
   workspace: {
@@ -292,6 +295,62 @@ const readLog = () => fs.readFileSync(path.join(TMP, 'server.log'), 'utf8').trim
       ['GitHub rejected the push because the token lacks the workflow scope.', 'Run that, then tell me.']);
     assert.ok(logLines.some((l) => l.includes('read selection')), 'troubleshooting log written');
     console.log('✓ panel right-click; long selection maps to the reply and skips code');
+
+    // 16) one connection for many sentences; recovers from stalls and dropped connections
+    const setMode = (q) => new Promise((res) => require('http').get(`http://127.0.0.1:8080/__mode?${q}`, (r) => { r.resume(); r.on('end', res); }));
+    const many = 'One is here. Two is here. Three is here. Four is here. Five is here.';
+    fs.writeFileSync(path.join(TMP, 'server.log'), '');
+    openEditor(many, 'plaintext', 0);
+    assert.equal((await spokenNow(() => commands['readAloud.readFromHere']())).length, 5);
+    const conns = readLog().filter((e) => e.type === 'ws').length;
+    assert.equal(conns, 1, `5 sentences over one connection (opened ${conns})`);
+    await setMode('closeAfterTurn=1');
+    openEditor(many, 'plaintext', 0);
+    assert.equal((await spokenNow(() => commands['readAloud.readFromHere']())).length, 5, 'reconnects after each dropped connection');
+    await setMode('stallNext=1');
+    openEditor(many, 'plaintext', 0);
+    const tStall = Date.now();
+    assert.equal((await spokenNow(() => commands['readAloud.readFromHere']())).length, 5, 'stalled request retried');
+    assert.ok(readLog().some((e) => e.type === 'stalled'));
+    await setMode('');
+    console.log(`✓ 1 connection for 5 sentences; survives dropped connections; stall recovered (${((Date.now() - tStall) / 1000).toFixed(1)} s total)`);
+
+    // 17) explicit proxy (VS Code "http.proxy"): traffic is tunnelled through it
+    const net = require('net');
+    const tunnels = [];
+    const proxy = require('http').createServer().on('connect', (req, client, head) => {
+      tunnels.push(req.url);
+      const upstream = net.connect(443, '127.0.0.1', () => {
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        upstream.write(head);
+        upstream.pipe(client);
+        client.pipe(upstream);
+      });
+      upstream.on('error', () => client.destroy());
+      client.on('error', () => upstream.destroy());
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+    config.proxy = `http://127.0.0.1:${proxy.address().port}`;
+    for (const fn of listeners.config) await fn({ affectsConfiguration: (k) => k === 'http.proxy' || k.startsWith('readAloud') });
+    openEditor('Through the proxy we go.', 'plaintext', 0);
+    assert.deepEqual(await spokenNow(() => commands['readAloud.readFromHere']()), ['Through the proxy we go.']);
+    assert.ok(tunnels.includes('speech.platform.bing.com:443'), `tunnelled via proxy (${tunnels.join(', ')})`);
+    console.log('✓ explicit proxy: speech tunnelled through http.proxy');
+
+    // 18) Test Connection reports each step
+    messages.length = 0;
+    await commands['readAloud.testConnection']();
+    assert.match(messages.at(-1)[1], /connection OK/);
+    assert.ok(logLines.some((l) => l.includes('✓ Speech (WebSocket)')) && logLines.some((l) => l.includes('✓ Voice list')));
+    config.proxy = 'http://127.0.0.1:1'; // nothing listening there
+    for (const fn of listeners.config) await fn({ affectsConfiguration: (k) => k === 'http.proxy' });
+    await commands['readAloud.testConnection']();
+    assert.equal(messages.at(-1)[0], 'error');
+    assert.match(messages.at(-1)[1], /Voice list.*failed|failed/);
+    console.log(`✓ Test Connection: OK path, and a clear error for a broken proxy ("${messages.at(-1)[1].slice(0, 70)}…")`);
+    delete config.proxy;
+    for (const fn of listeners.config) await fn({ affectsConfiguration: (k) => k === 'http.proxy' });
+    proxy.close();
 
     ext.deactivate();
     console.log('ALL PASSED');
