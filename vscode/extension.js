@@ -21,8 +21,11 @@ async function load() {
 }
 
 let ctx;
-let statusItem;
+let statusItem; // main button: menu when idle, play/pause while reading
 let stopItem;
+let prevItem;
+let nextItem;
+let speedItem;
 let sentenceDeco;
 let wordDeco;
 let tmpDir;
@@ -57,18 +60,24 @@ function rangeOf(doc, start, length) {
   return new vscode.Range(doc.positionAt(start), doc.positionAt(start + length));
 }
 
+const short = (t, n = 18) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+
 function updateStatus(state) {
   if (!statusItem) return;
+  const controls = [prevItem, nextItem, speedItem, stopItem];
   if (!session) {
     statusItem.text = '$(unmute) Read Aloud';
-    statusItem.tooltip = 'Read aloud from the cursor (or the selection)';
-    stopItem.hide();
+    statusItem.tooltip = 'Read Aloud: open menu (read, Claude replies, voice, speed)';
+    statusItem.command = 'readAloud.menu';
+    controls.forEach((i) => i.hide());
   } else {
-    const pos = `${session.label ? `${session.label} ` : ''}${session.idx + 1}/${session.sentences.length}`;
+    const pos = `${session.label ? `${short(session.label)} ` : ''}${session.idx + 1}/${session.sentences.length}`;
     statusItem.text = state === 'loading' ? `$(loading~spin) ${pos}`
       : session.playing ? `$(debug-pause) ${pos}` : `$(play) ${pos}`;
-    statusItem.tooltip = session.playing ? 'Pause reading' : 'Resume reading';
-    stopItem.show();
+    statusItem.tooltip = `${session.playing ? 'Pause' : 'Resume'} reading${session.label ? ` — ${session.label}` : ''}`;
+    statusItem.command = 'readAloud.toggle';
+    speedItem.text = `${Number(session.settings.rate).toFixed(2).replace(/0$/, '')}×`;
+    controls.forEach((i) => i.show());
   }
   vscode.commands.executeCommand('setContext', 'readAloud.active', !!session);
 }
@@ -249,23 +258,78 @@ function claudeConfig() {
   const c = vscode.workspace.getConfiguration('readAloud');
   return {
     autoRead: c.get('claude.autoRead', false),
+    autoReadSessions: c.get('claude.autoReadSessions', 'focused'),
     includeProgress: c.get('claude.includeProgressUpdates', false),
     dir: mods.claude.projectsDir(c.get('claude.projectsDir', '')),
   };
 }
 
-async function readLastClaudeReply() {
-  await load();
+const norm = (t) => String(t || '').trim().toLowerCase();
+
+// The Claude Code tab you're looking at, if any: its label is the session's title.
+function activeClaudeTabTitle(sessions) {
+  const groups = vscode.window.tabGroups;
+  if (!groups) return null;
+  const titles = new Map(sessions.map((s) => [norm(s.title), s]));
+  const active = groups.activeTabGroup?.activeTab;
+  if (active && titles.has(norm(active.label))) return active.label;
+  // Otherwise a Claude tab that's visible in another editor group (split view)
+  const visible = groups.all.map((g) => g.activeTab).filter((t) => t && titles.has(norm(t.label)));
+  return visible.length === 1 ? visible[0].label : null;
+}
+
+function workspaceSlugs() {
+  return (vscode.workspace.workspaceFolders || []).map((f) => mods.claude.projectSlug(f.uri.fsPath));
+}
+
+// Which session to read:
+//  1. the Claude Code tab you're looking at (matched by its title), else
+//  2. the most recently active session of this workspace's folder, else
+//  3. the most recently active session anywhere.
+function targetSession() {
+  const { dir } = claudeConfig();
+  const sessions = mods.claude.listSessions(dir).slice(0, 40);
+  for (const s of sessions) s.title = mods.claude.sessionTitle(s.file);
+  const tabTitle = activeClaudeTabTitle(sessions);
+  if (tabTitle) return { ...sessions.find((s) => norm(s.title) === norm(tabTitle)), how: 'open tab' };
+  const slugs = workspaceSlugs();
+  const inWorkspace = sessions.find((s) => slugs.includes(s.project));
+  if (inWorkspace) return { ...inWorkspace, how: 'latest in this workspace' };
+  return sessions[0] ? { ...sessions[0], how: 'latest anywhere' } : null;
+}
+
+async function readReplyFrom(target) {
   const { dir, includeProgress } = claudeConfig();
-  const file = mods.claude.latestTranscript(dir);
-  const reply = file && mods.claude.lastReply(mods.claude.readTail(file), { includeProgress });
-  if (!reply) {
-    vscode.window.showInformationMessage(file
-      ? 'Read Aloud: the latest Claude Code session has no reply text yet.'
-      : `Read Aloud: no Claude Code sessions found in ${dir}.`);
+  if (!target) {
+    vscode.window.showInformationMessage(`Read Aloud: no Claude Code sessions found in ${dir}.`);
     return;
   }
-  if (!(await startMarkdown(reply.text, 'Claude'))) vscode.window.showInformationMessage('Read Aloud: nothing readable in the last reply.');
+  const title = target.title || 'Claude';
+  const reply = mods.claude.lastReply(mods.claude.readTail(target.file), { includeProgress });
+  if (!reply) {
+    vscode.window.showInformationMessage(`Read Aloud: "${title}" has no finished reply text yet.`);
+    return;
+  }
+  if (await startMarkdown(reply.text, title)) vscode.window.setStatusBarMessage(`$(unmute) Reading reply from "${title}" (${target.how})`, 4000);
+  else vscode.window.showInformationMessage('Read Aloud: nothing readable in that reply.');
+}
+
+async function readLastClaudeReply() {
+  await load();
+  return readReplyFrom(targetSession());
+}
+
+async function pickSessionAndRead() {
+  await load();
+  const { dir } = claudeConfig();
+  const sessions = mods.claude.listSessions(dir).slice(0, 25);
+  if (!sessions.length) { vscode.window.showInformationMessage(`Read Aloud: no Claude Code sessions found in ${dir}.`); return; }
+  const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+  const pick = await vscode.window.showQuickPick(sessions.map((s) => {
+    const title = mods.claude.sessionTitle(s.file) || '(untitled session)';
+    return { label: title, description: ago(s.mtimeMs), detail: s.project.replace(/^-/, '/').replace(/-/g, '/'), session: { ...s, title, how: 'picked' } };
+  }), { placeHolder: 'Read the last reply of which Claude Code session?' });
+  if (pick) return readReplyFrom(pick.session);
 }
 
 // Copy whatever is selected in the focused panel (e.g. the Claude Code chat webview, which other
@@ -284,15 +348,18 @@ async function copyFocusedSelection() {
   return text === sentinel ? '' : text;
 }
 
-// Find a selected word/phrase in the latest Claude Code session -> read from there to the end of that message.
+// Find a selected word/phrase in the session you're looking at (then other recent ones)
+// -> read from there to the end of that message.
 function findInClaudeSession(selected) {
+  const target = targetSession();
   const { dir } = claudeConfig();
-  const file = mods.claude.latestTranscript(dir);
-  if (!file) return null;
-  const texts = mods.claude.assistantTexts(mods.claude.readTail(file));
-  for (let i = texts.length - 1; i >= 0; i--) {
-    const pos = mods.text.findSpoken(mods.text.spokenText(texts[i], 'markdown'), selected);
-    if (pos >= 0) return { markdown: texts[i], from: pos };
+  const files = [target?.file, ...mods.claude.listSessions(dir).slice(0, 10).map((s) => s.file)].filter(Boolean);
+  for (const file of [...new Set(files)]) {
+    const texts = mods.claude.assistantTexts(mods.claude.readTail(file));
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const pos = mods.text.findSpoken(mods.text.spokenText(texts[i], 'markdown'), selected);
+      if (pos >= 0) return { markdown: texts[i], from: pos, title: file === target?.file ? target.title : mods.claude.sessionTitle(file) };
+    }
   }
   return null;
 }
@@ -303,7 +370,7 @@ async function readPanelSelection() {
   if (!selected) return readLastClaudeReply();
   if (mods.text.isShortSelection(selected)) {
     const hit = findInClaudeSession(selected);
-    if (hit) return startMarkdown(hit.markdown, 'Claude', { from: hit.from });
+    if (hit) return startMarkdown(hit.markdown, hit.title || 'Claude', { from: hit.from });
   }
   return startMarkdown(selected, 'Selection', { languageId: 'plaintext' });
 }
@@ -316,7 +383,19 @@ async function updateClaudeWatcher() {
   if (!autoRead) return;
   claudeWatcher = mods.claude.watchReplies(dir, {
     includeProgress,
-    onReply: (reply) => startMarkdown(reply.text, 'Claude'),
+    onReply: (reply, file) => {
+      // "focused" (default): only the session you're looking at — or, if no Claude tab is in
+      // front, sessions of this workspace. "all": any session that finishes.
+      const title = mods.claude.sessionTitle(file) || 'Claude';
+      if (claudeConfig().autoReadSessions !== 'all') {
+        const target = targetSession();
+        const isTarget = target?.file === file;
+        const tabOpen = target?.how === 'open tab';
+        const inWorkspace = workspaceSlugs().includes(path.basename(path.dirname(file)));
+        if (tabOpen ? !isTarget : !(inWorkspace || isTarget)) return;
+      }
+      startMarkdown(reply.text, title);
+    },
     onError: (err) => vscode.window.showErrorMessage(`Read Aloud: can't watch Claude Code sessions in ${dir}: ${err.message}`),
   });
 }
@@ -365,11 +444,38 @@ async function chooseVoice() {
   if (pick) await vscode.workspace.getConfiguration('readAloud').update('voice', pick.shortName, vscode.ConfigurationTarget.Global);
 }
 
+async function nudgeSpeed(delta) {
+  const c = vscode.workspace.getConfiguration('readAloud');
+  const next = Math.min(3, Math.max(0.5, Math.round((c.get('speed', 1) + delta) * 10) / 10));
+  await c.update('speed', next, vscode.ConfigurationTarget.Global);
+  vscode.window.setStatusBarMessage(`Read Aloud speed: ${next}×`, 1500);
+}
+
 async function setSpeed() {
   const current = vscode.workspace.getConfiguration('readAloud').get('speed', 1);
   const options = ['0.75', '1.0', '1.1', '1.25', '1.5', '1.75', '2.0', '2.5'];
   const pick = await vscode.window.showQuickPick(options.map((o) => ({ label: `${o}×`, value: Number(o), description: Number(o) === current ? 'current' : undefined })), { placeHolder: 'Reading speed' });
   if (pick) await vscode.workspace.getConfiguration('readAloud').update('speed', pick.value, vscode.ConfigurationTarget.Global);
+}
+
+// One menu for everything (status bar button when idle).
+async function menu() {
+  await load();
+  const c = vscode.workspace.getConfiguration('readAloud');
+  const target = (() => { try { return targetSession(); } catch { return null; } })();
+  const voice = c.get('voice', '').replace(/^[a-z]{2,}-[A-Z]{2,}-/, '').replace(/Neural$/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
+  const items = [
+    { label: '$(play) Read from cursor / selection', description: '⌘⌥R', run: () => start() },
+    { label: '$(comment-discussion) Read last Claude Code reply', description: target ? `"${target.title || 'untitled'}" · ${target.how}` : 'no sessions found', run: readLastClaudeReply },
+    { label: '$(list-selection) Read a reply from another session…', run: pickSessionAndRead },
+    { label: `$(sync) Auto-read Claude replies: ${c.get('claude.autoRead', false) ? 'On' : 'Off'}`, description: 'toggle', run: toggleAutoRead },
+    { label: '', kind: vscode.QuickPickItemKind?.Separator ?? -1 },
+    { label: `$(dashboard) Speed: ${c.get('speed', 1)}×`, run: setSpeed },
+    { label: `$(person) Voice: ${voice}`, run: chooseVoice },
+    { label: '$(settings-gear) All Read Aloud settings', run: () => vscode.commands.executeCommand('workbench.action.openSettings', 'readAloud') },
+  ];
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Read Aloud' });
+  if (pick?.run) await pick.run();
 }
 
 async function setAzureKey() {
@@ -391,12 +497,17 @@ function activate(context) {
   wordDeco = vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(255, 200, 40, 0.55)', borderRadius: '2px',
   });
-  statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusItem.command = 'readAloud.toggle';
-  stopItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-  stopItem.text = '$(close)';
-  stopItem.tooltip = 'Stop reading';
-  stopItem.command = 'readAloud.stop';
+  // Status bar while reading:  [⏮] [⏸ title 3/12] [⏭] [1.25×] [✕]
+  const item = (priority, text, tooltip, command) => {
+    const it = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, priority);
+    Object.assign(it, { text, tooltip, command });
+    return it;
+  };
+  prevItem = item(104, '$(chevron-left)', 'Previous sentence', 'readAloud.previous');
+  statusItem = item(103, '', '', 'readAloud.menu');
+  nextItem = item(102, '$(chevron-right)', 'Next sentence', 'readAloud.next');
+  speedItem = item(101, '1×', 'Reading speed (click to change)', 'readAloud.setSpeed');
+  stopItem = item(100, '$(close)', 'Stop reading', 'readAloud.stop');
   if (vscode.workspace.getConfiguration('readAloud').get('showStatusBar', true)) statusItem.show();
   updateStatus();
 
@@ -413,11 +524,15 @@ function activate(context) {
   reg('readAloud.readLastClaudeReply', readLastClaudeReply);
   reg('readAloud.readPanelSelection', readPanelSelection);
   reg('readAloud.toggleAutoReadClaude', toggleAutoRead);
+  reg('readAloud.readClaudeSession', pickSessionAndRead);
+  reg('readAloud.menu', menu);
+  reg('readAloud.faster', () => nudgeSpeed(0.1));
+  reg('readAloud.slower', () => nudgeSpeed(-0.1));
   updateClaudeWatcher();
   context.subscriptions.push({ dispose: () => claudeWatcher?.dispose() });
 
   context.subscriptions.push(
-    statusItem, stopItem, sentenceDeco, wordDeco,
+    statusItem, stopItem, prevItem, nextItem, speedItem, sentenceDeco, wordDeco,
     // Offsets go stale if the document is edited while reading: stop rather than mis-highlight.
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (session && e.document === session.doc && e.contentChanges.length) {
@@ -436,6 +551,7 @@ function activate(context) {
       if (session) {
         session.settings = await getSettings();
         dropCache((j) => j > session.idx); // new voice/speed applies from the next sentence
+        updateStatus(session.playing ? 'playing' : undefined);
       }
     }),
   );

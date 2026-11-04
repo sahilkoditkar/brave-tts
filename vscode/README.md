@@ -1,4 +1,4 @@
-# Read Aloud for VS Code (personal)
+# Read Aloud Anywhere — VS Code (personal)
 
 > Personal project — not for use or distribution. Relies on an undocumented service and
 > will break when it changes. All rights reserved.
@@ -14,20 +14,36 @@ being spoken.
 
 ## Use
 
+**Controls:** everything is in the status bar, bottom-right.
+- Idle: a **🔈 Read Aloud** button opens a menu with every action: read, Claude replies,
+  auto-read on/off, speed, voice and settings.
+- While reading it becomes **‹ ⏸ title 3/12 › 1.25× ✕**:
+  - **‹ / ›**: previous / next sentence
+  - **⏸**: pause / resume
+  - **1.25×**: click to change speed (or **⌘⌥=** / **⌘⌥-** to nudge it)
+  - **✕**: stop
+- Markdown files also get a 🔈 button in the editor's top-right corner.
+
 **In any editor file:**
 - Right-click and choose **Read Aloud from Here**: it starts at the word under the cursor.
 - Or double-click a word and press **⌘⌥R** (Ctrl+Alt+R on Windows/Linux) to read from there.
 - Select a longer passage and press ⌘⌥R to read just that passage.
-- While reading, ⌘⌥R pauses and resumes, **Ctrl+Alt+→ / ←** jumps between sentences, and **✕** in
-  the status bar stops.
 
 **Claude Code replies:**
-- **⌘⌥U**: read the latest Claude Code reply.
+- **⌘⌥U**: read the last reply of **the session you're looking at**:
+  1. The Claude Code tab in front, matched by its title.
+  2. If no Claude tab is in front, the most recently active session in this workspace.
+  3. Otherwise, the most recently active session anywhere.
+
+  The status bar says which session it picked.
+- **Read Aloud: Read Reply from a Claude Code Session…** (also in the menu): pick any session from a
+  list.
 - In the Claude Code panel, select a word and press **⌘⌥R** to read from that word to the end of the
-  reply. Select a longer passage to read just that. With nothing selected, ⌘⌥R reads the latest
-  reply.
-- **Read Aloud: Toggle Auto-Read Claude Code Replies**: speak each reply as soon as Claude finishes
-  it.
+  reply. Select a longer passage to read just that. With nothing selected, ⌘⌥R reads the session's
+  last reply.
+- **Auto-read** (menu, or **Read Aloud: Toggle Auto-Read Claude Code Replies**): speaks a reply as
+  soon as Claude finishes it. By default only for the session you're looking at (setting
+  `readAloud.claude.autoReadSessions`: `focused` or `all`).
 - Only Claude's text is read, never tool calls, tool output, thinking or code blocks. By default
   only the final message of each turn is read; turn on `readAloud.claude.includeProgressUpdates` to
   also hear the short updates between tool calls.
@@ -36,9 +52,6 @@ How it works: Claude Code's chat panel is another extension's sandboxed view, so
 directly. Instead, replies are read (read-only) from the session files Claude Code saves in
 `~/.claude/projects`. A selection in the panel is picked up by copying it, and your clipboard text
 is restored right after.
-
-**Settings:** Command Palette → **Read Aloud: Choose Voice** / **Set Speed**, or search "Read Aloud"
-in Settings.
 
 Audio plays through the OS player: `afplay` on macOS and Windows Media on Windows (both built in),
 or ffplay/mpg123/mpv on Linux. Editing a file while it's being read stops the reading, so

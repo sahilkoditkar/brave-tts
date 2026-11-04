@@ -1,4 +1,4 @@
-# Read Aloud (personal)
+# Read Aloud Anywhere (personal)
 
 > **Personal project — not for use or distribution.**
 > I built this for myself and published it only to show how it works. It isn't supported and isn't

@@ -37,7 +37,8 @@ const config = { 'claude.projectsDir': CLAUDE_DIR, voice: 'en-US-AndrewNeural', 
 const messages = [];
 let editor;
 let clipboard = 'user clipboard';
-let panelSelection = ''; // what's selected in the (simulated) Claude Code webview
+let panelSelection = '';
+let activeTab = null; // simulated active editor tab (Claude Code tabs are labelled with the session title) // what's selected in the (simulated) Claude Code webview
 const mkEvent = (name) => (fn) => { (listeners[name] ||= []).push(fn); return { dispose() {} }; };
 const statusItems = [];
 const vscodeMock = {
@@ -50,6 +51,7 @@ const vscodeMock = {
     clipboard: { readText: async () => clipboard, writeText: async (t) => { clipboard = t; } },
   },
   window: {
+    get tabGroups() { return { activeTabGroup: { activeTab: activeTab }, all: [{ activeTab }] }; },
     get activeTextEditor() { return editor; },
     get visibleTextEditors() { return editor ? [editor] : []; },
     createTextEditorDecorationType: (opts) => ({ opts, dispose() {} }),
@@ -113,7 +115,7 @@ const readLog = () => fs.readFileSync(path.join(TMP, 'server.log'), 'utf8').trim
       secrets: { get: async (k) => secrets.get(k), store: async (k, v) => secrets.set(k, v), delete: async (k) => secrets.delete(k) },
       globalState: { get: (k) => globalState.get(k), update: async (k, v) => globalState.set(k, v) },
     });
-    const [statusItem] = statusItems;
+    const statusItem = statusItems[1]; // [prev, main, next, speed, stop]
     assert.match(statusItem.text, /Read Aloud/);
 
     // 1) Markdown, from the cursor in the middle of a word
@@ -223,6 +225,46 @@ const readLog = () => fs.readFileSync(path.join(TMP, 'server.log'), 'utf8').trim
     ].join('\n') + '\n');
     await waitFor(() => readLog().some((e) => e.type === 'ssml' && e.text === 'Great, the PR is merged.'), 8000);
     console.log('✓ auto-read speaks a newly finished reply');
+
+    // 12) several sessions open: read the one whose tab you're looking at
+    config['claude.autoRead'] = false;
+    listeners.config.forEach((fn) => fn({ affectsConfiguration: (k) => k.startsWith('readAloud') }));
+    const mkSession = (name, title, replyText, ageMs) => {
+      const f = path.join(CLAUDE_DIR, '-Users-me-other', `${name}.jsonl`);
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, [
+        JSON.stringify({ type: 'custom-title', customTitle: title }),
+        L({ type: 'user', message: { content: 'hi' } }),
+        L({ type: 'assistant', message: { content: [{ type: 'text', text: replyText }], stop_reason: 'end_turn' } }),
+      ].join('\n') + '\n');
+      const t = new Date(Date.now() - ageMs);
+      fs.utimesSync(f, t, t);
+    };
+    mkSession('a', 'ml sidechat', 'Reply from the side chat.', 5000);
+    mkSession('b', 'vulnhub reviewer', 'Reply from the reviewer.', 1000); // most recently active
+    fs.utimesSync(transcript, new Date(Date.now() - 60000), new Date(Date.now() - 60000));
+    activeTab = null;
+    assert.deepEqual(await spokenNow(() => commands['readAloud.readLastClaudeReply']()), ['Reply from the reviewer.']);
+    activeTab = { label: 'ml sidechat' };
+    assert.deepEqual(await spokenNow(() => commands['readAloud.readLastClaudeReply']()), ['Reply from the side chat.']);
+    console.log('✓ reads the session of the tab you are looking at; else the most recent');
+
+    // 13) controls appear while reading; speed shown and adjustable
+    activeTab = null;
+    const [prevI, mainI, nextI, speedI, stopI] = statusItems;
+    openEditor('One. Two. Three. Four.', 'plaintext', 0);
+    await commands['readAloud.readFromHere']();
+    await waitFor(() => /debug-pause/.test(mainI.text));
+    assert.ok(prevI.visible && nextI.visible && speedI.visible && stopI.visible, 'controls visible while reading');
+    assert.equal(speedI.text, '1.5×');
+    await commands['readAloud.faster']();
+    listeners.config.forEach((fn) => fn({ affectsConfiguration: (k) => k.startsWith('readAloud') }));
+    await sleep(50);
+    assert.equal(config.speed, 1.6);
+    assert.equal(speedI.text, '1.6×');
+    await commands['readAloud.stop']();
+    assert.ok(!prevI.visible && !speedI.visible && mainI.command === 'readAloud.menu', 'idle: just the menu button');
+    console.log('✓ status bar controls (prev / pause / next / speed / stop) and speed nudge');
 
     ext.deactivate();
     console.log('ALL PASSED');

@@ -15,6 +15,64 @@ export function projectsDir(override) {
   return path.join(base, 'projects');
 }
 
+// Session title as shown on the Claude Code tab (latest custom title / agent name / summary).
+function titleIn(text) {
+  for (const key of ['customTitle', 'agentName', 'summary']) {
+    const re = new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`, 'g');
+    let m;
+    let last = null;
+    while ((m = re.exec(text))) last = m[1];
+    if (last != null) {
+      try { return JSON.parse(`"${last}"`); } catch { return last; }
+    }
+  }
+  return '';
+}
+
+function readHead(file, bytes = 512 * 1024) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(bytes);
+    const n = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.subarray(0, n).toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// -> [{ file, project, title, mtimeMs }] newest first (top-level transcripts only)
+export function listSessions(dir) {
+  const out = [];
+  let projects;
+  try { projects = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const p of projects) {
+    if (!p.isDirectory()) continue;
+    const pdir = path.join(dir, p.name);
+    let entries;
+    try { entries = fs.readdirSync(pdir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
+      const file = path.join(pdir, e.name);
+      try { out.push({ file, project: p.name, mtimeMs: fs.statSync(file).mtimeMs }); } catch { /* ignore */ }
+    }
+  }
+  out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out;
+}
+
+export function sessionTitle(file) {
+  try {
+    return titleIn(readTail(file, 1024 * 1024)) || titleIn(readHead(file));
+  } catch {
+    return '';
+  }
+}
+
+// Claude Code names project folders after the workspace path, e.g. /Users/me/proj -> -Users-me-proj
+export function projectSlug(fsPath) {
+  return fsPath.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
 // Newest top-level transcript (<project>/<session>.jsonl); subagent transcripts live deeper.
 export function latestTranscript(dir) {
   let best = null;
@@ -37,11 +95,11 @@ export function latestTranscript(dir) {
   return best?.file || null;
 }
 
-export function readTail(file) {
+export function readTail(file, bytes = TAIL_BYTES) {
   const fd = fs.openSync(file, 'r');
   try {
     const { size } = fs.fstatSync(fd);
-    const start = Math.max(0, size - TAIL_BYTES);
+    const start = Math.max(0, size - bytes);
     const buf = Buffer.alloc(size - start);
     fs.readSync(fd, buf, 0, buf.length, start);
     let text = buf.toString('utf8');
@@ -122,7 +180,7 @@ export function watchReplies(dir, { includeProgress, since = Date.now(), onReply
         try { reply = lastReply(readTail(file), { includeProgress }); } catch { return; }
         if (!reply?.done || reply.timestamp < since || spoken.has(reply.id)) return;
         spoken.add(reply.id);
-        onReply(reply);
+        onReply(reply, file);
       }, 1200));
     });
   } catch (err) {
