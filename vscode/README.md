@@ -78,14 +78,8 @@ highlights never drift.
 
 ## Install
 
-From the repo root:
+Download `read-aloud-vscode-<version>.vsix` from the repo's latest release (built by GitHub
+Actions), then in VS Code open **Extensions** → **⋯** → **Install from VSIX…**
 
-```bash
-node vscode/scripts/pack-vsix.mjs
-```
-
-Then in VS Code, open **Extensions** → **⋯** → **Install from VSIX…** → pick
-`vscode/dist/read-aloud-<version>.vsix`.
-
-It has no npm dependencies. The token, voices and protocol code come from `../shared`, which is
-shared with the browser extension.
+It has no runtime dependencies. The token, protocol client and sentence splitting come from
+`../shared` (shared with the browser extension), bundled into one `extension.js` at build time.

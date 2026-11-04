@@ -7,14 +7,12 @@ import tls from 'node:tls';
 import dns from 'node:dns';
 import crypto from 'node:crypto';
 import {
-  WSS_URL, VOICE_LIST_URL, SEC_MS_GEC_VERSION, OUTPUT_FORMAT,
+  VOICE_LIST_URL, SEC_MS_GEC_VERSION, OUTPUT_FORMAT,
   EDGE_EXTENSION_ORIGIN, EDGE_USER_AGENT, EDGE_SEC_CH_UA,
 } from '../shared/constants.js';
 import { generateSecMsGec, generateMuid, adjustClockSkew } from '../shared/drm.js';
-import {
-  uuid, buildSsml, localeOf, parseHeaders, speechConfigMessage, ssmlMessage,
-  requestIdOf, CONNECT_TIMEOUT_MS, IDLE_TIMEOUT_MS,
-} from '../shared/ssml.js';
+import { buildSsml, localeOf, CONNECT_TIMEOUT_MS } from '../shared/ssml.js';
+import { EdgeClient } from '../shared/edge-client.js';
 
 const MUID = generateMuid();
 const EDGE_HEADERS = {
@@ -28,12 +26,19 @@ const EDGE_HEADERS = {
 // Test hook only: lets the test suite point the engine at a local fake server.
 let transport = {};
 export function _setTransportForTests(options) { transport = options; }
-const timeouts = { connect: CONNECT_TIMEOUT_MS, idle: IDLE_TIMEOUT_MS };
-export function _setTimeoutsForTests(t) { Object.assign(timeouts, t); }
+const timeouts = { connect: CONNECT_TIMEOUT_MS };
+export function _setTimeoutsForTests({ connect, ...rest }) {
+  if (connect) timeouts.connect = connect;
+  Object.assign(edge.timeouts, rest);
+}
 
 // ---------------------------------------------------------------- proxy (explicit http.proxy / HTTPS_PROXY)
 let proxyUrl = '';
-export function setProxy(url) { proxyUrl = url || ''; }
+export function setProxy(url) {
+  if ((url || '') === proxyUrl) return;
+  proxyUrl = url || '';
+  edge.close(); // an open connection was made the old way
+}
 
 function tunnel(host, port) {
   return new Promise((resolve, reject) => {
@@ -128,7 +133,7 @@ class WsConnection {
     this.onclose = () => {};
     this.closed = false;
     socket.setNoDelay(true);
-    socket.on('data', (d) => { this.buf = Buffer.concat([this.buf, d]); this.parse(); });
+    socket.on('data', (d) => { this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d; this.parse(); });
     socket.on('close', () => { if (!this.closed) { this.closed = true; this.onclose(); } });
     socket.on('error', () => socket.destroy());
     if (this.buf.length) setImmediate(() => this.parse());
@@ -161,8 +166,9 @@ class WsConnection {
       let mask = null;
       if (masked) { if (b.length < off + 4) return; mask = b.subarray(off, off + 4); off += 4; }
       if (b.length < off + len) return;
-      let payload = Buffer.from(b.subarray(off, off + len));
-      if (mask) for (let i = 0; i < len; i++) payload[i] ^= mask[i & 3];
+      // Server frames aren't masked: use the bytes in place (they're never modified afterwards).
+      let payload = b.subarray(off, off + len);
+      if (mask) { payload = Buffer.from(payload); for (let i = 0; i < len; i++) payload[i] ^= mask[i & 3]; }
       this.buf = b.subarray(off + len);
 
       if (opcode === 8) { this.close(); return; }
@@ -185,134 +191,24 @@ class WsConnection {
 }
 
 // ---------------------------------------------------------------- Edge backend
-// One connection reused for sentence after sentence (like Edge itself), requests one at a time.
-// Opening a new connection per sentence, several at once, makes the service stall.
-const abortError = () => Object.assign(new Error('Aborted'), { name: 'AbortError' });
-
-class EdgeConnection {
-  constructor() {
-    this.ws = null;
-    this.ready = null;
-    this.turn = null;
-    this.chain = Promise.resolve();
-  }
-
-  connect() {
-    if (this.ws?.closed) { this.ws = null; this.ready = null; }
-    if (this.ready) return this.ready;
-    const url = `${WSS_URL}&ConnectionId=${uuid()}&Sec-MS-GEC=${generateSecMsGec()}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}`;
-    this.ready = wsConnect(url, { ...EDGE_HEADERS, Origin: EDGE_EXTENSION_ORIGIN }).then((ws) => {
-      ws.onmessage = (isBinary, data) => this.onMessage(ws, isBinary, data);
-      ws.onclose = () => this.drop(ws, new Error('Edge service closed the connection'));
-      ws.send(speechConfigMessage());
-      this.ws = ws;
-      return ws;
-    }, (err) => {
-      this.ready = null;
-      throw err;
-    });
-    return this.ready;
-  }
-
-  drop(ws, err) {
-    if (!this.ws || this.ws === ws) { this.ws = null; this.ready = null; }
-    ws.close();
-    const t = this.turn;
-    if (t && t.ws === ws) t.finish(err);
-  }
-
-  close() {
-    if (this.ws) this.drop(this.ws, abortError());
-  }
-
-  onMessage(ws, isBinary, data) {
-    const t = this.turn;
-    if (!t || t.ws !== ws) return;
-    let headers;
-    let body;
-    if (!isBinary) {
-      const str = data.toString('utf8');
-      const sep = str.indexOf('\r\n\r\n');
-      headers = parseHeaders(str.slice(0, sep));
-      body = str.slice(sep + 4);
-    } else {
-      if (data.length < 2) return;
-      const hl = data.readUInt16BE(0);
-      headers = parseHeaders(data.subarray(2, 2 + hl).toString('utf8'));
-      body = data.subarray(2 + hl);
-    }
-    const rid = requestIdOf(headers);
-    if (rid && rid.toLowerCase() !== t.requestId) return; // left over from an earlier request
-    t.arm();
-    if (headers.Path === 'audio') {
-      if (headers['Content-Type'] === 'audio/mpeg' && body.length) t.chunks.push(Buffer.from(body));
-    } else if (headers.Path === 'audio.metadata') {
-      try {
-        for (const m of JSON.parse(body).Metadata || []) {
-          if (m.Type === 'WordBoundary') t.words.push({ offset: m.Data.Offset, duration: m.Data.Duration, text: m.Data.text.Text });
-        }
-      } catch { /* ignore */ }
-    } else if (headers.Path === 'turn.end') {
-      t.finish();
-    }
-  }
-
-  runTurn(ws, text, settings, signal) {
-    return new Promise((resolve, reject) => {
-      if (signal?.aborted) { reject(abortError()); return; }
-      const requestId = uuid();
-      let idle;
-      const onAbort = () => this.drop(ws, abortError()); // the next request reconnects
-      const turn = {
-        ws, requestId, chunks: [], words: [],
-        arm: () => {
-          clearTimeout(idle);
-          idle = setTimeout(() => this.drop(ws, new Error('The Edge service stopped responding')), timeouts.idle);
-        },
-        finish: (err) => {
-          clearTimeout(idle);
-          signal?.removeEventListener('abort', onAbort);
-          if (this.turn === turn) this.turn = null;
-          if (err) reject(err);
-          else if (!turn.chunks.length) reject(new Error('No audio received from the Edge service'));
-          else resolve({ audio: Buffer.concat(turn.chunks), words: turn.words });
-        },
-      };
-      signal?.addEventListener('abort', onAbort);
-      this.turn = turn;
-      turn.arm();
-      ws.send(ssmlMessage(text, settings, requestId));
-    });
-  }
-
-  async attempt(text, settings, signal) {
-    for (let i = 0; ; i++) {
-      if (signal?.aborted) throw abortError();
-      let ws;
-      try {
-        ws = await this.connect();
-      } catch (err) {
-        if (i >= 1) throw err;
-        if (err.status === 403 && err.date) adjustClockSkew(err.date); // token is time-based
-        continue;
-      }
-      try {
-        return await this.runTurn(ws, text, settings, signal);
-      } catch (err) {
-        if (err.name === 'AbortError' || i >= 1) throw err; // stalled/dropped: retry once, fresh connection
-      }
-    }
-  }
-
-  synth(text, settings, signal) {
-    const run = this.chain.then(() => this.attempt(text, settings, signal));
-    this.chain = run.catch(() => {});
-    return run;
-  }
-}
-
-const edge = new EdgeConnection();
+// The protocol (one reused connection, retries, linger) lives in shared/edge-client.js.
+const edge = new EdgeClient({
+  open: (url, { onMessage, onClose }) => wsConnect(url, { ...EDGE_HEADERS, Origin: EDGE_EXTENSION_ORIGIN }).then((ws) => {
+    ws.onmessage = (isBinary, data) => onMessage(isBinary ? data : data.toString('utf8'));
+    ws.onclose = onClose;
+    return ws;
+  }),
+  onHandshakeFailure: async (err) => { if (err.status === 403 && err.date) adjustClockSkew(err.date); }, // token is time-based
+});
+// Close the connection now (normally it's kept open for a while, so the next read starts at once).
 export function closeConnection() { edge.close(); }
+// Open the connection ahead of the first request.
+export function warmUp(settings) { if (settings?.backend !== 'azure') edge.warm(); }
+
+async function edgeSynth(text, settings, signal) {
+  const { chunks, words } = await edge.synth(text, settings, signal);
+  return { audio: Buffer.concat(chunks), words };
+}
 
 // ---------------------------------------------------------------- HTTPS helper
 function request(url, { method = 'GET', headers = {}, body } = {}) {
@@ -349,7 +245,7 @@ async function azureSynth(text, settings) {
 
 // ---------------------------------------------------------------- public API
 export function synthesize(text, settings, signal) {
-  return settings.backend === 'azure' ? azureSynth(text, settings) : edge.synth(text, settings, signal);
+  return settings.backend === 'azure' ? azureSynth(text, settings) : edgeSynth(text, settings, signal);
 }
 
 export async function listVoices(settings) {
@@ -399,7 +295,7 @@ export async function diagnose(settings) {
   closeConnection();
   await run('Speech (WebSocket)', async () => {
     const t0 = Date.now();
-    const r = await edge.synth('Testing the connection.', { ...settings, backend: 'edge' });
+    const r = await edgeSynth('Testing the connection.', { ...settings, backend: 'edge' });
     return `${r.audio.length} bytes of audio in ${Date.now() - t0} ms`;
   });
   return steps;

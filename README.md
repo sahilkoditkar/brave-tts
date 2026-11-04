@@ -17,11 +17,11 @@ brought the same voices into VS Code for reading docs.
 |---|---|
 | [`browser/`](browser) | Brave/Chromium extension: reads web pages with sentence and word highlighting |
 | [`vscode/`](vscode) | VS Code extension: reads Markdown/docs, only the comments in code, and Claude Code replies |
-| [`shared/`](shared) | The voice engine both use: request token, constants, SSML/protocol |
+| [`shared/`](shared) | The voice engine both use: request token, constants, SSML, and the connection/protocol client |
 
-`shared/` is the single source of truth. Brave can only load files inside the extension folder, so
-`browser/lib/` holds an exact copy. `node scripts/sync-shared.mjs` refreshes it, and `--check` fails
-if it's stale.
+`shared/` is the single source of truth: both extensions import it directly, and there are no
+copies. GitHub Actions bundles each extension (with [esbuild](https://esbuild.github.io)), tests the
+built result, and puts both install files on a draft release (see [Installing](#installing)).
 
 ## Browser extension
 
@@ -39,8 +39,8 @@ if it's stale.
 ```
 page (content.js)            background.js               offscreen.html (offscreen.js)
 ─────────────────            ─────────────               ─────────────────────────────
-extract text → sentences ──▶ routes messages,      ──▶  WebSocket per sentence → MP3 + word timings
-CSS Custom Highlight API ◀── relays player events  ◀──  plays audio, prefetches next 3 sentences,
+extract text → sentences ──▶ routes messages,      ──▶  one reused WebSocket → MP3 + word timings
+CSS Custom Highlight API ◀── relays player events  ◀──  plays audio, prefetches next 2 sentences,
 floating player (shadow DOM) context menu, shortcut      reports sentence/word progress
 ```
 
@@ -56,8 +56,8 @@ floating player (shadow DOM) context menu, shortcut      reports sentence/word p
   can't be read by other extensions.
 - Right-click → **Read Aloud from Here** (or **Read Aloud Selection**), ⌘⌥R to start or pause,
   and the sentence and word are highlighted in the editor.
-- No npm dependencies at all. It uses a hand-written WebSocket client on Node's `https`, the OS
-  audio player (`afplay` on macOS), and a dependency-free `.vsix` packer.
+- No runtime dependencies at all. It uses a hand-written WebSocket client on Node's `https`, and the
+  OS audio player (`afplay` on macOS).
 
 ## Interesting problems
 
@@ -77,11 +77,19 @@ floating player (shadow DOM) context menu, shortcut      reports sentence/word p
 - **No stalls between sentences.** Both extensions keep **one** connection open and request
   sentences one at a time over it, the way Edge does, while the current one plays. A stalled
   request is abandoned after 5 s and retried on a fresh connection. (Opening a connection per
-  sentence, several at once, made the service stall.)
+  sentence, several at once, made the service stall.) This logic is written once, in
+  `shared/edge-client.js`; each extension only supplies its WebSocket.
+- **No handshake wait on the next read.** The connection is opened while the text is still being
+  extracted, and stays open for 30 s after reading stops. Stopping, skipping or changing speed
+  lets the cancelled sentence finish arriving in the background instead of closing the connection.
+  The browser also keeps the last 40 sentences it spoke, so going back or reading again is instant.
 - **Fast start.** The browser streams audio into a `MediaSource` as it arrives, so speech starts
   with the first chunk rather than after the whole sentence. The audio player is also warmed up while
   the page script loads. In VS Code, where the OS player needs whole files, a long first sentence is
   split at a natural pause.
+- **Long pages.** Text extraction builds one flat string from the page's text nodes. Testing the end
+  of that string with a regex made V8 copy the whole string each time, so a long page took
+  seconds; tracking the last character instead made it ~20× faster.
 - **Testable without the real service.** A local fake speech server (TLS + hand-rolled WebSocket
   framing) runs end-to-end tests for both extensions. That covers header rewriting, the token, the
   protocol, playback, highlighting, selection, speed changes, and jumping.
@@ -98,10 +106,12 @@ Extensions are a common attack route, so this one is kept deliberately small:
   analytics.
 - **Web pages can't control it.** There's no `externally_connectable`. Page text is XML-escaped
   before going into SSML, and the player UI never uses `innerHTML`.
-- **No silent updates.** It's loaded from a local folder, not a store, so nobody can push an update
-  to it. Updating means reviewing and pulling a change yourself.
-- **No dependencies.** The extensions have no npm packages, so there's no supply chain to compromise.
-  (Tests use Playwright, which is dev-only.)
+- **No silent updates.** It's installed by hand from this repo's releases, not from a store, so
+  nobody can push an update to it. Updating means downloading a new build yourself.
+- **No runtime dependencies.** The extensions ship only this repo's code. The one build tool
+  (esbuild) is pinned to an exact version in `package-lock.json` and installed with
+  `--ignore-scripts`, and its output isn't minified, so the installed code stays readable. (Tests
+  use Playwright, which is test-only.)
 - **What leaves your machine:** the text being read goes to Microsoft's speech service, the same as
   Edge's Read Aloud. That includes Claude Code replies when you read them aloud, so don't use it on
   confidential content. Claude Code session files are only read locally, never uploaded or
@@ -112,26 +122,41 @@ Extensions are a common attack route, so this one is kept deliberately small:
 
 The free endpoint is unofficial, so expect breakage. The usual fix is to bump the version constants
 in `shared/constants.js` and/or port the latest token change into `shared/drm.js` from a newer
-edge-tts release, then run `node scripts/sync-shared.mjs`. That fixes both extensions.
+edge-tts release, then push. The next build fixes both extensions.
 
 There's an official fallback built into both: switch the voice source to *Azure Speech key*. Azure
 Speech has a free tier with the same neural voices. Word highlighting isn't available there.
 
-## Running it locally (for myself)
+## Installing
 
-**Browser:** `brave://extensions` → **Developer mode** → **Load unpacked** → select the `browser`
-folder. It can't run on `brave://` pages, the extension store, or the built-in PDF viewer.
+Every push to `main` is tested and built by GitHub Actions ([`build.yml`](.github/workflows/build.yml)),
+which makes a draft release (only the newest draft is kept). No Node.js needed on your machine.
+From **Releases**, download:
 
-**VS Code:** `node vscode/scripts/pack-vsix.mjs`, then in VS Code go to **Extensions** → **⋯** →
-**Install from VSIX…** → `vscode/dist/read-aloud-<version>.vsix`.
+- **Browser:** `read-aloud-browser-<version>.zip`. Unzip it, then `brave://extensions` →
+  **Developer mode** → **Load unpacked** → pick the `read-aloud-browser` folder. To update, unzip the
+  new build over the same folder and press the reload icon on the extension (same folder = same
+  extension, so your settings stay). It can't run on `brave://` pages, the extension store, or the
+  built-in PDF viewer.
+- **VS Code:** `read-aloud-vscode-<version>.vsix`. In VS Code: **Extensions** → **⋯** →
+  **Install from VSIX…**
 
-**Tests:**
+To build a branch, run the workflow by hand: **Actions** → **Build** → **Run workflow**.
+
+## Building and testing (optional, needs Node.js 18+)
 
 ```bash
-node scripts/sync-shared.mjs --check
-node shared/tests/token.test.mjs
-node vscode/tests/text.test.mjs
-node vscode/tests/claude.test.mjs
-node browser/tests/e2e/run.js         # needs Playwright, openssl, ffmpeg, port 443
-node vscode/tests/extension.test.cjs  # needs openssl, ffmpeg, port 443
+npm ci --ignore-scripts
+npm run build                          # -> dist/*.zip, dist/*.vsix, dist/browser (unpacked)
+npm test                               # unit tests
+node vscode/tests/bundle.test.cjs      # the built VS Code extension loads
+node browser/tests/e2e/run.js          # needs Playwright, openssl, ffmpeg, port 443
+node vscode/tests/extension.test.cjs   # needs openssl, ffmpeg, port 443
+```
+
+**Benchmarks** (fake service with simulated latency, and large generated inputs):
+
+```bash
+node browser/tests/e2e/bench.js   # first word, gaps, a 1.5 MB page
+node vscode/tests/bench.mjs       # Claude Code transcripts, long Markdown
 ```

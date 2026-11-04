@@ -2,9 +2,11 @@
 // Content script (in the page) is the controller: it sends the list of sentences
 // and commands; we report back which sentence/word is being spoken.
 
-import { synthesize, closeConnection } from './lib/tts.js';
+import { synthesize, warmUp } from './tts.js';
 
 const PREFETCH_AHEAD = 2; // fetched one at a time over a single connection, while the current sentence plays
+const RECENT_MAX = 40; // finished sentences kept, so going back or reading again needs no request
+// One player element, reused (alternating two preloaded players made gaps longer, not shorter).
 const audio = new Audio();
 // Stream audio into the player while it's still being synthesized (much faster start).
 const CAN_STREAM = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
@@ -15,6 +17,7 @@ let idx = 0;
 let settings = {};
 let gen = 0; // bumps whenever playback position changes, cancels stale async work
 let cache = new Map(); // idx -> { promise, controller, chunks, words, listeners, done, url }
+const recent = new Map(); // text + voice settings -> { url, words } (oldest first)
 let playingUrl = null;
 let streamCleanup = null;
 let wordTimer = null;
@@ -27,8 +30,29 @@ function emit(event, data = {}) {
   chrome.runtime.sendMessage({ to: 'tab', tabId, event, ...data }).catch(() => {});
 }
 
+const keyOf = (text) => `${settings.backend}|${settings.voice}|${settings.rate}|${settings.pitch}|${text}`;
+
+function remember(key, entry) {
+  recent.delete(key);
+  recent.set(key, { url: entry.url, words: entry.words });
+  for (const [k, v] of recent) {
+    if (recent.size <= RECENT_MAX) break;
+    recent.delete(k);
+    if (v.url !== playingUrl) URL.revokeObjectURL(v.url);
+  }
+}
+
 function get(j) {
   let entry = cache.get(j);
+  const key = keyOf(texts[j]);
+  const known = !entry && recent.get(key);
+  if (known) {
+    recent.delete(key); // most recently used goes last
+    recent.set(key, known);
+    entry = { controller: new AbortController(), chunks: [], words: known.words, listeners: new Set(), done: true, url: known.url };
+    entry.promise = Promise.resolve(entry);
+    cache.set(j, entry);
+  }
   if (!entry) {
     const controller = new AbortController();
     const text = texts[j];
@@ -52,6 +76,7 @@ function get(j) {
     entry.promise = synthesize(text, settings, controller.signal, hooks).then((r) => {
       entry.url = URL.createObjectURL(r.audio);
       entry.done = true;
+      remember(key, entry); // `recent` owns the URL from here on
       return entry;
     });
     entry.promise.catch(() => {});
@@ -64,7 +89,6 @@ function dropCache(predicate) {
   for (const [j, e] of cache) {
     if (predicate(j)) {
       e.controller.abort();
-      if (e.url) URL.revokeObjectURL(e.url);
       cache.delete(j);
     }
   }
@@ -119,8 +143,8 @@ function startWordTimer(entry, myGen) {
   wordTimer = setInterval(() => {
     if (myGen !== gen) return stopWordTimer();
     const t = audio.currentTime * 1e7;
-    let w = -1;
-    for (let k = 0; k < entry.words.length && entry.words[k].offset <= t; k++) w = k;
+    let w = lastWord;
+    while (w + 1 < entry.words.length && entry.words[w + 1].offset <= t) w++;
     if (w !== lastWord && w >= 0) {
       lastWord = w;
       emit('word', { idx, start: entry.words[w].start, length: entry.words[w].length });
@@ -208,8 +232,7 @@ function stop(notify = true) {
   playingUrl = null;
   audio.pause();
   audio.removeAttribute('src');
-  dropCache(() => true);
-  closeConnection();
+  dropCache(() => true); // aborts requests in flight; an idle connection stays open for the next read
   if (notify) emit('stopped');
   texts = [];
   tabId = null;
@@ -266,6 +289,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case 'stop':
       // notify the page so its player bar closes (e.g. Stop pressed in the popup)
       if (msg.tabId == null || msg.tabId === tabId) stop(true);
+      sendResponse({ ok: true });
+      break;
+    case 'warm': // reading is about to start: open the connection while the page text is extracted
+      warmUp(msg.settings);
       sendResponse({ ok: true });
       break;
     case 'ping':

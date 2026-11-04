@@ -16,18 +16,25 @@ export function projectsDir(override) {
 }
 
 // Session title as shown on the Claude Code tab (latest custom title / agent name / summary).
-function titleIn(text) {
-  for (const key of ['customTitle', 'agentName', 'summary']) {
-    const re = new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`, 'g');
+const TITLE_KEYS = ['customTitle', 'agentName', 'summary'];
+const TITLE_RES = TITLE_KEYS.map((key) => new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`, 'g'));
+
+// -> { customTitle?, agentName?, summary? }: the last value of each key in `text`
+function titleKeys(text) {
+  const out = {};
+  TITLE_KEYS.forEach((key, k) => {
+    const re = TITLE_RES[k];
+    re.lastIndex = 0;
     let m;
     let last = null;
     while ((m = re.exec(text))) last = m[1];
     if (last != null) {
-      try { return JSON.parse(`"${last}"`); } catch { return last; }
+      try { out[key] = JSON.parse(`"${last}"`); } catch { out[key] = last; }
     }
-  }
-  return '';
+  });
+  return out;
 }
+const pickTitle = (keys) => TITLE_KEYS.map((k) => keys[k]).find((v) => v != null) ?? '';
 
 function readHead(file, bytes = 512 * 1024) {
   const fd = fs.openSync(file, 'r');
@@ -60,9 +67,36 @@ export function listSessions(dir) {
   return out;
 }
 
+function readRange(file, start, end) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(end - start);
+    const n = fs.readSync(fd, buf, 0, buf.length, start);
+    return buf.subarray(0, n).toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Titles are looked up for many sessions at once (to match the tab you're looking at), so they're
+// cached per file, and when a transcript grows only the new part is read.
+const titleCache = new Map(); // file -> { size, mtimeMs, keys, title }
 export function sessionTitle(file) {
   try {
-    return titleIn(readTail(file, 1024 * 1024)) || titleIn(readHead(file));
+    const { size, mtimeMs } = fs.statSync(file);
+    const cached = titleCache.get(file);
+    if (cached && cached.size === size && cached.mtimeMs === mtimeMs) return cached.title;
+    let keys;
+    if (cached && size > cached.size) {
+      // a little overlap, in case the last write was cut mid-line
+      keys = { ...cached.keys, ...titleKeys(readRange(file, Math.max(0, cached.size - 4096), size)) };
+    } else {
+      keys = titleKeys(readTail(file, 1024 * 1024));
+      if (!pickTitle(keys)) keys = titleKeys(readHead(file));
+    }
+    const title = pickTitle(keys);
+    titleCache.set(file, { size, mtimeMs, keys, title });
+    return title;
   } catch {
     return '';
   }
@@ -120,14 +154,20 @@ const isPrompt = (e) => {
 // -> { text, done, id, timestamp } for the latest turn, or null.
 //    includeProgress=false: only the final message (text after the last tool call).
 export function lastReply(jsonl, { includeProgress = false } = {}) {
+  // Walk back from the end and parse only the latest turn (transcripts are mostly older turns).
   const entries = [];
-  for (const line of jsonl.split('\n')) {
+  for (let end = jsonl.length; end > 0;) {
+    const start = jsonl.lastIndexOf('\n', end - 1) + 1;
+    const line = jsonl.slice(start, end);
+    end = start - 1;
     if (!line.trim()) continue;
-    try { entries.push(JSON.parse(line)); } catch { /* partial line being written */ }
+    let e;
+    try { e = JSON.parse(line); } catch { continue; } // partial line being written
+    if (isPrompt(e)) break;
+    entries.push(e);
   }
-  let promptIdx = -1;
-  for (let i = entries.length - 1; i >= 0; i--) if (isPrompt(entries[i])) { promptIdx = i; break; }
-  const turn = entries.slice(promptIdx + 1).filter((e) => e.type === 'assistant' && !e.isSidechain && e.message);
+  entries.reverse();
+  const turn = entries.filter((e) => e.type === 'assistant' && !e.isSidechain && e.message);
   if (!turn.length) return null;
 
   let blocks = [];
@@ -152,10 +192,11 @@ export function lastReply(jsonl, { includeProgress = false } = {}) {
 }
 
 // All assistant text blocks in a transcript, oldest first (for finding a selected phrase).
+const ASSISTANT_LINE = /"type"\s*:\s*"assistant"/;
 export function assistantTexts(jsonl) {
   const out = [];
   for (const line of jsonl.split('\n')) {
-    if (!line.trim()) continue;
+    if (!ASSISTANT_LINE.test(line)) continue; // skip parsing tool output etc. (most of the bytes)
     let e;
     try { e = JSON.parse(line); } catch { continue; }
     if (e.type !== 'assistant' || e.isSidechain || !Array.isArray(e.message?.content)) continue;

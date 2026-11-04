@@ -1,22 +1,20 @@
 # shared
 
-The voice engine used by both extensions. Edit the files here, never the copies in `browser/lib`.
+Code used by both extensions. Both import it directly (`import … from '../shared/…'`), and the
+build (`scripts/build.mjs`, run by GitHub Actions) bundles it into each extension. There are no
+copies to keep in sync.
 
 | File | What it does |
 |---|---|
 | `constants.js` | Endpoint URLs, the Edge client version, and default settings |
 | `drm.js` | The time-based `Sec-MS-GEC` request token (a port of edge-tts) |
 | `ssml.js` | SSML building, protocol messages, and word-timing mapping |
+| `edge-client.js` | The connection: one reused WebSocket, requests one at a time, stall detection and retry, keeping it open between reads, warming it up early |
+| `sentences.js` | Splitting text into sentences (abbreviations, very long sentences) for the page reader and VS Code |
 
-- **VS Code** (`vscode/`) imports these directly. The `.vsix` packer bundles them.
-- **Browser** (`browser/`): Brave can only load files inside the extension folder, so
-  `browser/lib/` holds an exact copy. After editing here, run:
+Only the transport differs, and it's passed in to `EdgeClient`: the browser uses its `WebSocket`
+(`browser/tts.js`), and VS Code uses a small WebSocket client on Node's `https`
+(`vscode/engine.mjs`).
 
-  ```bash
-  node scripts/sync-shared.mjs
-  ```
-
-  `node scripts/sync-shared.mjs --check` fails if the copy is out of date.
-
-Each extension keeps its own transport: the browser uses `WebSocket`/`fetch` (`browser/lib/tts.js`),
-and VS Code uses Node's `https` (`vscode/engine.mjs`).
+Rules for code that goes here: standard JavaScript modules only, no Node-only or browser-only APIs
+(`TextDecoder`, `crypto.getRandomValues`, `Intl.Segmenter` and timers are fine in both).

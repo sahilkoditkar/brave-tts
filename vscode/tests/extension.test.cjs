@@ -303,7 +303,13 @@ const readLog = () => fs.readFileSync(path.join(TMP, 'server.log'), 'utf8').trim
     openEditor(many, 'plaintext', 0);
     assert.equal((await spokenNow(() => commands['readAloud.readFromHere']())).length, 5);
     const conns = readLog().filter((e) => e.type === 'ws').length;
-    assert.equal(conns, 1, `5 sentences over one connection (opened ${conns})`);
+    assert.ok(conns <= 1, `5 sentences over one connection (opened ${conns})`);
+    // The connection stays open between reads: reading again needs no new handshake
+    fs.writeFileSync(path.join(TMP, 'server.log'), '');
+    openEditor(many, 'plaintext', 0);
+    assert.equal((await spokenNow(() => commands['readAloud.readFromHere']())).length, 5);
+    assert.equal(readLog().filter((e) => e.type === 'ssml').length, 5);
+    assert.equal(readLog().filter((e) => e.type === 'ws').length, 0, 'next read reused the open connection');
     await setMode('closeAfterTurn=1');
     openEditor(many, 'plaintext', 0);
     assert.equal((await spokenNow(() => commands['readAloud.readFromHere']())).length, 5, 'reconnects after each dropped connection');
@@ -313,7 +319,7 @@ const readLog = () => fs.readFileSync(path.join(TMP, 'server.log'), 'utf8').trim
     assert.equal((await spokenNow(() => commands['readAloud.readFromHere']())).length, 5, 'stalled request retried');
     assert.ok(readLog().some((e) => e.type === 'stalled'));
     await setMode('');
-    console.log(`✓ 1 connection for 5 sentences; survives dropped connections; stall recovered (${((Date.now() - tStall) / 1000).toFixed(1)} s total)`);
+    console.log(`✓ 1 connection for 5 sentences, kept open for the next read; survives dropped connections; stall recovered (${((Date.now() - tStall) / 1000).toFixed(1)} s total)`);
 
     // 17) explicit proxy (VS Code "http.proxy"): traffic is tunnelled through it
     const net = require('net');

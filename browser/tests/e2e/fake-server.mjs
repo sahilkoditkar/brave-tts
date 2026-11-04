@@ -7,7 +7,10 @@ import { generateSecMsGec } from '../../../shared/drm.js';
 
 const dir = new URL('.', import.meta.url).pathname;
 const tmp = process.env.E2E_TMP;
-const log = (o) => fs.appendFileSync(tmp + '/server.log', JSON.stringify(o) + '\n');
+const log = (o) => fs.appendFileSync(tmp + '/server.log', JSON.stringify({ ...o, t: Date.now() }) + '\n');
+// Simulated network/service latency (benchmarks): WebSocket handshake, and time until the first audio.
+const HANDSHAKE_DELAY = Number(process.env.FAKE_HANDSHAKE_DELAY_MS || 0);
+const FIRST_AUDIO_DELAY = Number(process.env.FAKE_FIRST_AUDIO_DELAY_MS || 0);
 // Failure modes tests can switch on at runtime: GET http://127.0.0.1:8080/__mode?closeAfterTurn=1&stallNext=1
 const mode = { closeAfterTurn: false, stallNext: false };
 const mp3 = fs.readFileSync(tmp + '/tone.mp3');
@@ -58,7 +61,8 @@ server.on('upgrade', (req, socket) => {
     gecValid: url.searchParams.get('Sec-MS-GEC') === generateSecMsGec(), origin: req.headers.origin, ua: req.headers['user-agent'], cookie: req.headers.cookie, pragma: req.headers.pragma };
   log(entry);
   const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
-  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  const accepted = () => socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  if (HANDSHAKE_DELAY) setTimeout(accepted, HANDSHAKE_DELAY); else accepted();
   let pending = Buffer.alloc(0);
   socket.on('data', (d) => {
     pending = parseFrames(Buffer.concat([pending, d]), (op, payload) => {
@@ -84,6 +88,7 @@ server.on('upgrade', (req, socket) => {
       for (let p = 0; p < mp3.length; p += step) parts.push(mp3.subarray(p, p + step));
       const endHdr = Buffer.from(`X-RequestId:${rid}\r\nX-StreamId:1\r\nPath:audio\r\n`);
       const sendAll = async () => {
+        if (FIRST_AUDIO_DELAY) await new Promise((r) => setTimeout(r, FIRST_AUDIO_DELAY));
         for (const part of parts) {
           const len = Buffer.alloc(2); len.writeUInt16BE(audioHdr.length);
           socket.write(frame(2, Buffer.concat([len, audioHdr, part])));
@@ -112,6 +117,21 @@ http.createServer((req, res) => {
     return;
   }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'self'; style-src 'self'" });
-  res.end(fs.readFileSync(dir + 'article.html'));
+  res.end(req.url.startsWith('/big') ? bigArticle() : fs.readFileSync(dir + 'article.html'));
 }).listen(8080, '127.0.0.1');
+// A long page (benchmarks): ~1.5 MB of text with nav, sidebars and inline markup.
+function bigArticle() {
+  const para = (k) => `<p>Paragraph ${k} starts here, and <em>it</em> goes on with <a href="#">a link</a> and some <b>bold</b> words. ` +
+    `Dr. Smith said it twice. The second sentence of paragraph ${k} is a little longer than the first one, on purpose. ` +
+    `Finally, a third sentence closes it<sup class="reference">[${k}]</sup>.</p>`;
+  const sections = [];
+  for (let s = 0; s < 200; s++) {
+    const ps = [];
+    for (let k = 0; k < 25; k++) ps.push(para(s * 25 + k));
+    sections.push(`<section><h2>Section ${s}</h2>${ps.join('')}<aside>Related ${s}</aside></section>`);
+  }
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Big</title></head><body>` +
+    `<nav>${'<a href="#">Menu</a> '.repeat(50)}</nav><main><article><h1>A very long article</h1>${sections.join('')}</article></main>` +
+    `<footer>Footer</footer></body></html>`;
+}
 console.log('fake server up');

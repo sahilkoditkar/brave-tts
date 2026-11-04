@@ -211,11 +211,18 @@ function pause() {
   updateStatus();
 }
 
+// Reading is about to start: open the voice service connection while the text is prepared.
+// -> the settings (also needed to start)
+function warmUp() {
+  const settings = getSettings();
+  settings.then((s) => mods?.engine.warmUp(s), () => {});
+  return settings;
+}
+
 function stopReading() {
   gen++;
   stopAudio();
-  if (session) dropCache(() => true);
-  mods?.engine.closeConnection();
+  if (session) dropCache(() => true); // an idle connection stays open, so the next read starts at once
   session = null;
   clearHighlights();
   updateStatus();
@@ -226,6 +233,7 @@ async function start(editor) {
   editor = editor || vscode.window.activeTextEditor;
   if (!editor) { vscode.window.showInformationMessage('Read Aloud: open a file first.'); return; }
   await load();
+  const settings = warmUp();
   stopReading();
   const doc = editor.document;
   const spoken = mods.text.spokenText(doc.getText(), doc.languageId);
@@ -243,18 +251,19 @@ async function start(editor) {
       : 'Read Aloud: nothing to read after the cursor.');
     return;
   }
-  session = { doc, label: '', sentences, idx: 0, playing: true, cache: new Map(), settings: await getSettings() };
+  session = { doc, label: '', sentences, idx: 0, playing: true, cache: new Map(), settings: await settings };
   playFrom(0);
 }
 
 // Read Markdown that isn't in an editor (a Claude Code reply).
 async function startMarkdown(markdown, label, { from = 0, languageId = 'markdown' } = {}) {
   await load();
+  const settings = warmUp();
   stopReading();
   const spoken = mods.text.spokenText(markdown, languageId);
   const sentences = mods.text.quickStart(mods.text.sentencesInRange(spoken, from, spoken.length, vscode.env.language || 'en'));
   if (!sentences.length) return false;
-  session = { doc: null, label, sentences, idx: 0, playing: true, cache: new Map(), settings: await getSettings() };
+  session = { doc: null, label, sentences, idx: 0, playing: true, cache: new Map(), settings: await settings };
   playFrom(0);
   return true;
 }
@@ -322,6 +331,7 @@ async function readReplyFrom(target) {
 
 async function readLastClaudeReply() {
   await load();
+  warmUp();
   return readReplyFrom(targetSession());
 }
 
@@ -372,6 +382,7 @@ function findInClaudeSession(selected) {
   for (const file of [...new Set(files)]) {
     const texts = mods.claude.assistantTexts(mods.claude.readTail(file));
     for (let i = texts.length - 1; i >= 0; i--) {
+      if (!mods.text.mightContain(texts[i], selected)) continue;
       const pos = mods.text.findSpoken(mods.text.spokenText(texts[i], 'markdown'), selected);
       if (pos >= 0) return { markdown: texts[i], from: pos, title: file === target?.file ? target.title : mods.claude.sessionTitle(file) };
     }
@@ -387,6 +398,7 @@ function findInClaudeSession(selected) {
 // if it really appears in a Claude reply, so random clipboard contents are never read.
 async function readPanelSelection() {
   await load();
+  warmUp(); // copying the selection takes a moment: connect meanwhile
   const { copied, previous } = await copyFocusedSelection();
   let selected = copied.trim();
   let source = 'selection';
@@ -643,6 +655,7 @@ function activate(context) {
 
 function deactivate() {
   stopReading();
+  mods?.engine.closeConnection();
   claudeWatcher?.dispose();
   claudeWatcher = null;
   try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
