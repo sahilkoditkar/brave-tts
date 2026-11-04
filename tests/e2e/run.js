@@ -10,7 +10,7 @@ const assert = require('assert/strict');
 
 const HERE = __dirname;
 const ROOT = path.resolve(HERE, '../..');
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'brave-tts-e2e-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'read-aloud-e2e-'));
 const LOG = path.join(TMP, 'server.log');
 const readLog = () => (fs.existsSync(LOG) ? fs.readFileSync(LOG, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []);
 const ssmlTexts = () => readLog().filter((e) => e.type === 'ssml').map((e) => e.text);
@@ -48,8 +48,8 @@ function setup() {
     await page.bringToFront();
     const tabId = await ctl.evaluate(async () => (await chrome.tabs.query({ url: 'http://127.0.0.1:8080/*' }))[0].id);
     const send = (msg) => ctl.evaluate((m) => chrome.runtime.sendMessage(m), msg);
-    const sentence = () => page.evaluate(() => { const h = CSS.highlights.get('brave-tts-sentence'); return h ? [...h].map(String)[0] : null; });
-    const playerGone = () => page.waitForFunction(() => !document.querySelector('brave-tts-player'), null, { timeout: 20000 });
+    const sentence = () => page.evaluate(() => { const h = CSS.highlights.get('read-aloud-sentence'); return h ? [...h].map(String)[0] : null; });
+    const playerGone = () => page.waitForFunction(() => !document.querySelector('read-aloud-player'), null, { timeout: 20000 });
 
     // Read whole page
     await send({ to: 'bg', type: 'start', tabId, mode: 'page' });

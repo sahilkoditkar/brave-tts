@@ -1,8 +1,8 @@
 // Injected into the page on demand. Extracts readable text, splits it into
 // sentences, shows a small player bar, and highlights the sentence/word being spoken.
 (() => {
-  if (window.__braveTtsLoaded) return;
-  window.__braveTtsLoaded = true;
+  if (window.__browserReadAloudLoaded) return;
+  window.__browserReadAloudLoaded = true;
 
   // ---------------- messaging ----------------
   const toBg = (msg) => chrome.runtime.sendMessage({ to: 'bg', ...msg });
@@ -11,7 +11,7 @@
   // ---------------- text extraction ----------------
   const SKIP_TAGS = new Set([
     'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'SVG', 'CANVAS',
-    'IFRAME', 'TEMPLATE', 'BUTTON', 'VIDEO', 'AUDIO', 'MATH', 'BRAVE-TTS-PLAYER',
+    'IFRAME', 'TEMPLATE', 'BUTTON', 'VIDEO', 'AUDIO', 'MATH', 'READ-ALOUD-PLAYER',
   ]);
   const PAGE_SKIP_TAGS = new Set(['NAV', 'FOOTER', 'ASIDE', 'HEADER', 'FORM', 'MENU']);
   const PAGE_SKIP_ROLES = new Set(['navigation', 'banner', 'contentinfo', 'complementary', 'search', 'menu', 'menubar', 'dialog']);
@@ -200,8 +200,8 @@
   const hlWord = hasHighlights ? new Highlight() : null;
   if (hasHighlights) {
     hlWord.priority = 1;
-    CSS.highlights.set('brave-tts-sentence', hlSentence);
-    CSS.highlights.set('brave-tts-word', hlWord);
+    CSS.highlights.set('read-aloud-sentence', hlSentence);
+    CSS.highlights.set('read-aloud-word', hlWord);
   }
   let lastUserScroll = 0;
   const markUserScroll = () => { lastUserScroll = Date.now(); };
@@ -308,7 +308,7 @@
   `;
 
   function buildPlayer() {
-    host = document.createElement('brave-tts-player');
+    host = document.createElement('read-aloud-player');
     const shadow = host.attachShadow({ mode: 'closed' });
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(CSS_TEXT);
