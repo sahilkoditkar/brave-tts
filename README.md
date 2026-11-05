@@ -21,7 +21,7 @@ brought the same voices into VS Code for reading docs.
 
 `shared/` is the single source of truth: both extensions import it directly, and there are no
 copies. GitHub Actions bundles each extension (with [esbuild](https://esbuild.github.io)), tests the
-built result, and puts both install files on a draft release (see [Installing](#installing)).
+built result, and publishes both install files as a release (see [Installing](#installing)).
 
 ## Browser extension
 
@@ -138,8 +138,8 @@ Speech has a free tier with the same neural voices. Word highlighting isn't avai
 ## Installing
 
 Every push to `main` is tested and built by GitHub Actions ([`build.yml`](.github/workflows/build.yml)),
-which makes a draft release (only the newest draft is kept). No Node.js needed on your machine.
-From **Releases**, download:
+which publishes it as a release (only the newest build is kept). No Node.js needed on your machine.
+From [**Releases → latest**](https://github.com/sahilkoditkar/read-aloud-anywhere/releases/latest), download:
 
 - **Browser:** `read-aloud-browser-<version>.zip`. Unzip it, then `brave://extensions` →
   **Developer mode** → **Load unpacked** → pick the `read-aloud-browser` folder. To update, unzip the
@@ -149,7 +149,8 @@ From **Releases**, download:
 - **VS Code:** `read-aloud-vscode-<version>.vsix`. In VS Code: **Extensions** → **⋯** →
   **Install from VSIX…**
 
-To build a branch, run the workflow by hand: **Actions** → **Build** → **Run workflow**.
+To build a branch, run the workflow by hand: **Actions** → **Build** → **Run workflow**. That makes
+a draft release (visible only to you), so it doesn't replace the published one.
 
 ## Building and testing (optional, needs Node.js 18+)
 

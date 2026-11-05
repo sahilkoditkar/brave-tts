@@ -1,8 +1,9 @@
-# Tests and builds both extensions on every push. On main (or when run by hand from the Actions
-# tab), it also makes a draft release with the two files to install:
+# Tests and builds both extensions on every push. On main it also publishes a release with the two
+# files to install (public, marked "latest"; older build releases are removed):
 #   read-aloud-browser-<version>.zip   unzip, then brave://extensions → Load unpacked
 #   read-aloud-vscode-<version>.vsix   VS Code → Extensions → ⋯ → Install from VSIX…
-# Only the newest draft is kept. Drafts are visible only to you; publish one to keep it.
+# Run by hand from the Actions tab on another branch, it makes a draft release instead (visible
+# only to you), so trying a branch doesn't replace the published one.
 name: Build
 
 on:
@@ -65,14 +66,21 @@ jobs:
         with:
           name: read-aloud
           path: dist
-      - name: Draft release
+      - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          # replace older drafts, so the newest build is always the one at the top
-          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' |
-            while read -r tag; do gh release delete "$tag" --yes; done
+          # Keep only the newest build: on main, remove older build releases (and their tags);
+          # elsewhere, only older drafts.
+          gh release list --limit 100 --json tagName,isDraft \
+            --jq '.[] | select(.tagName | startswith("build-")) | "\(.tagName) \(.isDraft)"' |
+            while read -r tag draft; do
+              if [ "$draft" = true ]; then gh release delete "$tag" --yes
+              elif [ "$GITHUB_REF_NAME" = main ]; then gh release delete "$tag" --yes --cleanup-tag
+              fi
+            done
+          if [ "$GITHUB_REF_NAME" = main ]; then publish=--latest; else publish=--draft; fi
           short="${GITHUB_SHA::7}"
           tag="build-$(date -u +%Y%m%d-%H%M)-$short"
           notes="Built from ${GITHUB_REF_NAME} at ${short} (${{ github.server_url }}/${{ github.repository }}/commit/${GITHUB_SHA}).
@@ -80,5 +88,5 @@ jobs:
           **Browser (Brave/Chromium):** download the .zip, unzip it, then brave://extensions → Developer mode → Load unpacked → pick the read-aloud-browser folder. To update: unzip the new build over the same folder (same folder = same extension, settings kept) and press the reload icon on the extension.
 
           **VS Code:** download the .vsix, then Extensions → ⋯ → Install from VSIX…"
-          gh release create "$tag" dist/*.zip dist/*.vsix --draft --target "$GITHUB_SHA" \
+          gh release create "$tag" dist/*.zip dist/*.vsix "$publish" --target "$GITHUB_SHA" \
             --title "Build ${short} ($(date -u +%Y-%m-%d))" --notes "$notes"
