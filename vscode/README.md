@@ -78,8 +78,9 @@ highlights never drift.
 
 ## Install
 
-Download `read-aloud-vscode-<version>.vsix` from the repo's latest release (built by GitHub
-Actions), then in VS Code open **Extensions** → **⋯** → **Install from VSIX…**
+Download `read-aloud-vscode-<version>.vsix` from the
+[latest release](https://github.com/sahilkoditkar/read-aloud-anywhere/releases/latest) (public, built
+by GitHub Actions from `main`), then in VS Code open **Extensions** → **⋯** → **Install from VSIX…**
 
 It has no runtime dependencies. The token, protocol client and sentence splitting come from
 `../shared` (shared with the browser extension), bundled into one `extension.js` at build time.
