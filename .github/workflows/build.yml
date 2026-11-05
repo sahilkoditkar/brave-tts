@@ -71,15 +71,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          # Keep only the newest build: on main, remove older build releases (and their tags);
-          # elsewhere, only older drafts.
-          gh release list --limit 100 --json tagName,isDraft \
-            --jq '.[] | select(.tagName | startswith("build-")) | "\(.tagName) \(.isDraft)"' |
-            while read -r tag draft; do
-              if [ "$draft" = true ]; then gh release delete "$tag" --yes
-              elif [ "$GITHUB_REF_NAME" = main ]; then gh release delete "$tag" --yes --cleanup-tag
-              fi
-            done
+          # Older builds, removed only after the new release exists (so there's never a moment with
+          # no release to download). On main: older build releases and their tags; elsewhere, only
+          # older drafts.
+          old=$(gh release list --limit 100 --json tagName,isDraft \
+            --jq '.[] | select(.tagName | startswith("build-")) | "\(.tagName) \(.isDraft)"')
           if [ "$GITHUB_REF_NAME" = main ]; then publish=--latest; else publish=--draft; fi
           short="${GITHUB_SHA::7}"
           tag="build-$(date -u +%Y%m%d-%H%M)-$short"
@@ -90,3 +86,9 @@ jobs:
           **VS Code:** download the .vsix, then Extensions → ⋯ → Install from VSIX…"
           gh release create "$tag" dist/*.zip dist/*.vsix "$publish" --target "$GITHUB_SHA" \
             --title "Build ${short} ($(date -u +%Y-%m-%d))" --notes "$notes"
+          echo "$old" | while read -r oldtag draft; do
+            [ -n "$oldtag" ] && [ "$oldtag" != "$tag" ] || continue
+            if [ "$draft" = true ]; then gh release delete "$oldtag" --yes
+            elif [ "$GITHUB_REF_NAME" = main ]; then gh release delete "$oldtag" --yes --cleanup-tag
+            fi
+          done
