@@ -170,6 +170,27 @@ function setup() {
     assert.deepEqual(ssmlTexts(), ['item in a list', 'Second']);
     console.log('✓ selection mode');
 
+    // A long sentence to start at is split at a natural pause (faster first sound); highlights
+    // still line up with the page text.
+    const longSentence = 'When the storm finally reached the harbour after midnight and the old boats strained at their ropes, ' +
+      'the keeper climbed to the lamp room one last time and watched the sea.';
+    await page.evaluate((t) => {
+      const p = document.createElement('p'); p.id = 'long'; p.textContent = t;
+      document.querySelector('article').append(p);
+      const r = document.createRange(); r.selectNodeContents(p);
+      getSelection().removeAllRanges(); getSelection().addRange(r);
+    }, longSentence);
+    await freshPlayer();
+    fs.writeFileSync(LOG, '');
+    await send({ to: 'bg', type: 'start', tabId, mode: 'selection' });
+    await page.waitForFunction(() => CSS.highlights.get('read-aloud-sentence')?.size > 0, null, { timeout: 10000 });
+    const cut = longSentence.indexOf(', ') + 1;
+    assert.equal(await sentence(), longSentence.slice(0, cut), 'first part highlighted');
+    await playerGone();
+    assert.deepEqual(ssmlTexts(), [longSentence.slice(0, cut), longSentence.slice(cut + 1)]);
+    await page.evaluate(() => document.getElementById('long').remove());
+    console.log('✓ a long first sentence is split at a pause; both parts read');
+
     // Right-click a word -> "Read aloud from here" starts at that word.
     // (macOS selects the right-clicked word; simulate that selection here.)
     await freshPlayer();

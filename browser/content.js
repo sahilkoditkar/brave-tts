@@ -1,7 +1,7 @@
 // Injected into the page on demand. Extracts readable text, splits it into
 // sentences, shows a small player bar, and highlights the sentence/word being spoken.
 // Bundled into one plain script by scripts/build.mjs (pages can't load extension modules).
-import { sentencesOf } from '../shared/sentences.js';
+import { sentencesOf, quickStart } from '../shared/sentences.js';
 
 (() => {
   if (window.__browserReadAloudLoaded) return;
@@ -440,6 +440,8 @@ import { sentencesOf } from '../shared/sentences.js';
       const k = sentenceAtDomPoint(sel.anchorNode, sel.anchorOffset);
       if (k > 0) startIdx = k;
     }
+    // A long sentence to start at is split at a natural pause, so the first sound comes sooner.
+    doc.sentences = quickStart(doc.sentences, 120, startIdx);
     active = true;
     cur = startIdx;
     sel?.removeAllRanges?.();
@@ -448,7 +450,7 @@ import { sentencesOf } from '../shared/sentences.js';
     setStatus('Loading…');
     playing = true;
     setPlayIcon(true);
-    const res = await off({ type: 'load', texts: sentences.map((s) => s.text), start: startIdx });
+    const res = await off({ type: 'load', texts: doc.sentences.map((s) => s.text), start: startIdx });
     if (!res?.ok) onError(res?.error || 'Could not start the player');
   }
 

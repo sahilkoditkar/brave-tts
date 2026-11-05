@@ -205,8 +205,8 @@ export function closeConnection() { edge.close(); }
 // Open the connection ahead of the first request.
 export function warmUp(settings) { if (settings?.backend !== 'azure') edge.warm(); }
 
-async function edgeSynth(text, settings, signal) {
-  const { chunks, words } = await edge.synth(text, settings, signal);
+async function edgeSynth(text, settings, signal, hooks) {
+  const { chunks, words } = await edge.synth(text, settings, signal, hooks);
   return { audio: Buffer.concat(chunks), words };
 }
 
@@ -244,8 +244,9 @@ async function azureSynth(text, settings) {
 }
 
 // ---------------------------------------------------------------- public API
-export function synthesize(text, settings, signal) {
-  return settings.backend === 'azure' ? azureSynth(text, settings) : edgeSynth(text, settings, signal);
+// hooks (optional): { onAudio(Buffer), onWord(word) } fire while the audio streams in.
+export function synthesize(text, settings, signal, hooks) {
+  return settings.backend === 'azure' ? azureSynth(text, settings) : edgeSynth(text, settings, signal, hooks);
 }
 
 export async function listVoices(settings) {

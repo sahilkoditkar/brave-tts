@@ -9,8 +9,8 @@ copies to keep in sync.
 | `constants.js` | Endpoint URLs, the Edge client version, and default settings |
 | `drm.js` | The time-based `Sec-MS-GEC` request token (a port of edge-tts) |
 | `ssml.js` | SSML building, protocol messages, and word-timing mapping |
-| `edge-client.js` | The connection: one reused WebSocket, requests one at a time, stall detection and retry, keeping it open between reads, warming it up early |
-| `sentences.js` | Splitting text into sentences (abbreviations, very long sentences) for the page reader and VS Code |
+| `edge-client.js` | The connection: one reused WebSocket with up to 3 requests in flight, telling a dead connection from a slow voice, retry, keeping it open between reads, warming it up early |
+| `sentences.js` | Splitting text into sentences (abbreviations, very long sentences), and splitting a long sentence to start at, for the page reader and VS Code |
 
 Only the transport differs, and it's passed in to `EdgeClient`: the browser uses its `WebSocket`
 (`browser/tts.js`), and VS Code uses a small WebSocket client on Node's `https`

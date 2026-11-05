@@ -90,7 +90,7 @@ export function mapWords(text, words) {
 
 // Timeouts for the Edge connection: fail fast and retry instead of hanging.
 export const CONNECT_TIMEOUT_MS = 6000; // WebSocket handshake
-export const IDLE_TIMEOUT_MS = 5000; // no message from the service for this long mid-turn
+export const IDLE_TIMEOUT_MS = 5000; // no reply at all to a request for this long (it normally comes in ~100 ms)
 
 // The request a protocol message belongs to (several sentences share one connection).
 export function requestIdOf(headers) {

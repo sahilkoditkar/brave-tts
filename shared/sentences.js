@@ -54,3 +54,23 @@ export function sentencesOf(spoken, lang = 'en', from = 0, to = spoken.length) {
   }
   return out;
 }
+
+// The first sound waits for the service to synthesize the sentence reading starts at, and that
+// takes longer the longer the sentence (for some voices, seconds: ~3.4 s for 3 words, ~10 s for 25).
+// VS Code's player also needs the whole file first. So a long starting sentence is split at a
+// natural pause; the rest of it is requested at the same time and follows straight on.
+// sentences: [{ start, text, speak? }] -> a new array with sentences[at] split in two (or the same).
+export function quickStart(sentences, max = 120, at = 0) {
+  const first = sentences[at];
+  if (!first || first.text.length <= max) return sentences;
+  const head = first.text.slice(0, max);
+  let cut = Math.max(head.lastIndexOf(', '), head.lastIndexOf('; '), head.lastIndexOf(': '), head.lastIndexOf(' – '), head.lastIndexOf(' — '));
+  if (cut < 30) cut = head.lastIndexOf(' ');
+  if (cut < 30) return sentences;
+  const a = first.text.slice(0, cut + 1).trim();
+  const restRaw = first.text.slice(cut + 1);
+  const b = restRaw.trim();
+  const bStart = first.start + cut + 1 + (restRaw.length - restRaw.trimStart().length);
+  const speak = (t) => t.replace(/\s+/g, ' ');
+  return [...sentences.slice(0, at), { start: first.start, text: a, speak: speak(a) }, { start: bStart, text: b, speak: speak(b) }, ...sentences.slice(at + 1)];
+}

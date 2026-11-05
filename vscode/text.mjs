@@ -343,19 +343,5 @@ export function mightContain(markdown, needle) {
   return markdown.toLowerCase().includes(longest.toLowerCase());
 }
 
-// The OS audio player needs a complete file, so the first sound waits for the whole first
-// sentence to be synthesized. Split a long first sentence at a natural pause to start sooner.
-export function quickStart(sentences, max = 120) {
-  const first = sentences[0];
-  if (!first || first.text.length <= max) return sentences;
-  const head = first.text.slice(0, max);
-  let cut = Math.max(head.lastIndexOf(', '), head.lastIndexOf('; '), head.lastIndexOf(': '), head.lastIndexOf(' – '), head.lastIndexOf(' — '));
-  if (cut < 30) cut = head.lastIndexOf(' ');
-  if (cut < 30) return sentences;
-  const a = first.text.slice(0, cut + 1).trim();
-  const restRaw = first.text.slice(cut + 1);
-  const b = restRaw.trim();
-  const bStart = first.start + cut + 1 + (restRaw.length - restRaw.trimStart().length);
-  const speak = (t) => t.replace(/\s+/g, ' ');
-  return [{ start: first.start, text: a, speak: speak(a) }, { start: bStart, text: b, speak: speak(b) }, ...sentences.slice(1)];
-}
+// Split a long first sentence at a natural pause to start sooner (shared with the browser).
+export { quickStart } from '../shared/sentences.js';
